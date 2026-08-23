@@ -1052,3 +1052,39 @@ kbd {
   font-size: 12.5px;
   color: var(--danger);
 }
+
+/* ---------------------------------------------------------------- per-image regeneration */
+
+.image-frame {
+  position: relative;
+}
+
+.image-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / 72%);
+  color: var(--text-muted);
+}
+
+.image-card.is-busy .image-label {
+  color: var(--text-muted);
+}
+
+.image-meta-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.icon-button-neutral:hover:not(:disabled) {
+  background: #ececef;
+  color: var(--text);
+}
+
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}

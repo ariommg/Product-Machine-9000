@@ -11,8 +11,8 @@ export default postJsonHandler(
 
     return generateProductImages({
       aiText: (body.aiText as AiProductGenerationResult | null) ?? null,
-      imageCount: body.imageCount,
       imageModel: body.imageModel,
+      kinds: body.kinds,
       product: body.product as ExtractedProductData,
       referenceImageFiles: body.referenceImageFiles ?? [],
       referenceImageUrls: body.referenceImageUrls ?? [],

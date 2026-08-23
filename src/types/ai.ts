@@ -35,8 +35,13 @@ export type ReferenceImageFailure = {
 export type AiImageGenerationResult = {
   /** References the server could not load. Generation still runs with whatever loaded. */
   failedReferences: ReferenceImageFailure[];
-  imageCount: AiImageCount;
+  /** Which kinds this run produced. A regeneration returns exactly one. */
+  generatedKinds: AiImageKind[];
   images: Partial<Record<AiImageKind, AiGeneratedImage>>;
   referenceImageUrls: string[];
   usedReferenceImage: boolean;
 };
+
+export const AI_IMAGE_KINDS: AiImageKind[] = ["hero", "heroAngled", "macro", "lifestyle"];
+
+export const imageKindsForCount = (imageCount: AiImageCount) => AI_IMAGE_KINDS.slice(0, imageCount);

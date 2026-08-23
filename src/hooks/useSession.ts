@@ -14,7 +14,14 @@ import {
   type ReviewSpecificationField,
   type ReviewTextFieldKey,
 } from "../review/reviewWorkflow";
-import type { AiImageCount, AiImageGenerationResult, AiImageModel, AiProductGenerationResult } from "../types/ai";
+import { AI_IMAGE_KINDS, imageKindsForCount } from "../types/ai";
+import type {
+  AiImageCount,
+  AiImageGenerationResult,
+  AiImageKind,
+  AiImageModel,
+  AiProductGenerationResult,
+} from "../types/ai";
 
 export type UserReferenceImage = {
   dataUrl: string;
@@ -33,6 +40,8 @@ export type SessionProduct = {
   isGeneratingImages: boolean;
   isGeneratingText: boolean;
   referenceImages: UserReferenceImage[];
+  /** Kinds currently being regenerated on their own, for per-image spinners. */
+  regeneratingKinds: AiImageKind[];
   reviewState: ProductReviewState;
   selectedReferenceImageIds: string[];
   selectedSourceImageUrls: string[];
@@ -50,6 +59,8 @@ export const useSession = () => {
   const [products, setProducts] = useState<SessionProduct[]>([]);
   const [activeProductId, setActiveProductId] = useState("");
   const [importError, setImportError] = useState("");
+  // Every hosted URL created this session, so cleanup also catches replaced images.
+  const [hostedImageHistory, setHostedImageHistory] = useState<string[]>([]);
   const [isImporting, setIsImporting] = useState(false);
 
   // Async handlers need the latest products without re-creating every callback.
@@ -97,6 +108,7 @@ export const useSession = () => {
           isGeneratingImages: false,
           isGeneratingText: false,
           referenceImages: [],
+          regeneratingKinds: [],
           reviewState: buildReviewState(rawData),
           selectedReferenceImageIds: [],
           // The first source image is the most useful default AI reference.
@@ -382,14 +394,42 @@ export const useSession = () => {
     [updateProduct],
   );
 
-  const generateImages = useCallback(
-    async (id: string, imageModel: AiImageModel, imageCount: AiImageCount) => {
+  const toReviewImages = (aiImages: AiImageGenerationResult): ReviewImageField[] =>
+    AI_IMAGE_KINDS.flatMap((imageKind) => {
+      const image = aiImages.images[imageKind];
+      if (!image) {
+        return [];
+      }
+      return [
+        {
+          approved: false,
+          blobPathname: image.blobPathname,
+          hostedUrl: image.hostedUrl,
+          hostingError: image.hostingError,
+          imageKind,
+          kind: "ai-generated" as const,
+          label: image.label,
+          url: image.hostedUrl ?? image.dataUrlOrUrl,
+        },
+      ];
+    });
+
+  const runImageGeneration = useCallback(
+    async (id: string, imageModel: AiImageModel, kinds: AiImageKind[], mode: "replace" | "merge") => {
       const product = productsRef.current.find((item) => item.id === id);
-      if (!product || product.isGeneratingImages) {
+      if (!product || product.isGeneratingImages || kinds.length === 0) {
+        return;
+      }
+      if (mode === "merge" && kinds.some((kind) => product.regeneratingKinds.includes(kind))) {
         return;
       }
 
-      updateProduct(id, (current) => ({ ...current, error: "", isGeneratingImages: true }));
+      updateProduct(id, (current) => ({
+        ...current,
+        error: "",
+        isGeneratingImages: mode === "replace",
+        regeneratingKinds: mode === "merge" ? [...current.regeneratingKinds, ...kinds] : current.regeneratingKinds,
+      }));
 
       const referenceImageFiles = product.referenceImages
         .filter((image) => product.selectedReferenceImageIds.includes(image.id))
@@ -398,35 +438,42 @@ export const useSession = () => {
       try {
         const aiImages = await requestProductImages({
           aiText: product.aiResult,
-          imageCount,
           imageModel,
+          kinds,
           product: product.reviewState.rawData,
           referenceImageFiles,
           referenceImageUrls: product.selectedSourceImageUrls,
         });
 
+        const generatedImages = toReviewImages(aiImages);
+        // Remember every hosted URL, including ones a regeneration replaced, so
+        // cleanup can still reach images that are no longer on screen.
+        setHostedImageHistory((current) =>
+          Array.from(new Set([...current, ...generatedImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))])),
+        );
+
         updateProduct(id, (current) => {
-          const generatedImages: ReviewImageField[] = Object.values(aiImages.images)
-            .filter((image): image is NonNullable<typeof image> => Boolean(image))
-            .map((image) => ({
-              approved: false,
-              blobPathname: image.blobPathname,
-              hostedUrl: image.hostedUrl,
-              hostingError: image.hostingError,
-              kind: "ai-generated",
-              label: image.label,
-              url: image.hostedUrl ?? image.dataUrlOrUrl,
-            }));
+          const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
+          const keptGenerated =
+            mode === "merge"
+              ? current.reviewState.images.filter(
+                  (image) => image.kind === "ai-generated" && !kinds.includes(image.imageKind as AiImageKind),
+                )
+              : [];
+
+          // Re-sort into canonical shot order so a regenerated image keeps its place.
+          const generated = [...keptGenerated, ...generatedImages].sort(
+            (left, right) =>
+              AI_IMAGE_KINDS.indexOf(left.imageKind as AiImageKind) -
+              AI_IMAGE_KINDS.indexOf(right.imageKind as AiImageKind),
+          );
 
           return {
             ...current,
             aiImages,
             isGeneratingImages: false,
-            reviewState: {
-              ...current.reviewState,
-              // A new run replaces the previous generated set; source images stay put.
-              images: [...current.reviewState.images.filter((image) => image.kind === "source"), ...generatedImages],
-            },
+            regeneratingKinds: current.regeneratingKinds.filter((kind) => !kinds.includes(kind)),
+            reviewState: { ...current.reviewState, images: [...sourceImages, ...generated] },
           };
         });
       } catch (error) {
@@ -434,10 +481,24 @@ export const useSession = () => {
           ...current,
           error: error instanceof Error ? error.message : "Bildgenereringen misslyckades.",
           isGeneratingImages: false,
+          regeneratingKinds: current.regeneratingKinds.filter((kind) => !kinds.includes(kind)),
         }));
       }
     },
     [updateProduct],
+  );
+
+  const generateImages = useCallback(
+    (id: string, imageModel: AiImageModel, imageCount: AiImageCount) =>
+      runImageGeneration(id, imageModel, imageKindsForCount(imageCount), "replace"),
+    [runImageGeneration],
+  );
+
+  /** One OpenAI call instead of a full set, for when only one shot came out wrong. */
+  const regenerateImage = useCallback(
+    (id: string, imageModel: AiImageModel, kind: AiImageKind) =>
+      runImageGeneration(id, imageModel, [kind], "merge"),
+    [runImageGeneration],
   );
 
   const exportableDrafts = useMemo(
@@ -445,20 +506,6 @@ export const useSession = () => {
       products
         .filter((product) => requiredFieldsApproved(product.reviewState))
         .map((product) => buildApprovedDraft(product.reviewState)),
-    [products],
-  );
-
-  const hostedImageUrls = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          products.flatMap((product) =>
-            product.reviewState.images
-              .filter((image) => image.kind === "ai-generated" && image.hostedUrl)
-              .map((image) => image.hostedUrl as string),
-          ),
-        ),
-      ),
     [products],
   );
 
@@ -472,6 +519,7 @@ export const useSession = () => {
       generateImages,
       generateText,
       importFiles,
+      regenerateImage,
       removeProduct,
       removeReferenceImage,
       removeSpecification,
@@ -487,7 +535,7 @@ export const useSession = () => {
     },
     activeProduct,
     exportableDrafts,
-    hostedImageUrls,
+    hostedImageHistory,
     importError,
     isImporting,
     products,

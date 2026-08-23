@@ -96,3 +96,14 @@ Only generated images are exportable, and only once they have a public hosted UR
 Reference downloads must use browser-shaped request headers. Marketplace CDNs return an AVIF or a block page to anything that looks automated. Fetch references sequentially, retry connection resets, and sniff the magic bytes rather than trusting the content-type header.
 
 A reference that fails to download is reported per image and does not abort generation.
+
+## Cost
+
+Every generated image is a separate OpenAI call, and each call re-sends every reference image. Reference cost is therefore `referenceCount x imageCount`, and image input is billed on pixel dimensions.
+
+Two things follow, and both must be preserved:
+
+- References are downscaled once, before the fan-out, capped by `REFERENCE_IMAGE_MAX_EDGE` (default 768). Resizing must never throw: a reference that cannot be resized is sent as-is rather than failing the run.
+- A single image can be regenerated on its own. Do not replace the whole set when one shot is wrong.
+
+Hosted image URLs are tracked for the whole session, including ones a regeneration replaced, so cleanup can still reach images no longer on screen.

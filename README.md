@@ -58,7 +58,9 @@ Wording that reveals sourcing (Alibaba, leverantör, fabrik, Kina, dropshipping,
 
 ## AI images
 
-Up to four images per product: hero, angled hero, detail, lifestyle. Fewer images cost less.
+Up to four images per product: hero, angled hero, detail, lifestyle. Each image is one OpenAI call, so `calls = 1 text + number of images`.
+
+Every generated image has its own **regenerate** button. If only the lifestyle shot came out wrong, regenerating it costs one call instead of four, and the other three are kept exactly as they were.
 
 Reference images are what keep the generated product looking like the real product:
 
@@ -69,7 +71,9 @@ Reference images are what keep the generated product looking like the real produ
 
 Source images and your own reference images are reference-only. They are never exported to Shopify. Only generated images can be exported, and only once they have a public hosted URL.
 
-Reference images increase cost, because the model pays image input tokens for each one.
+Reference images increase cost. Image input is billed on pixel dimensions, and **every generated image re-sends every reference**, so the cost is `referenceCount x imageCount`. Two references across four images is eight reference uploads, not two.
+
+To keep that in check, references are downscaled before being sent. The longest edge is capped at `REFERENCE_IMAGE_MAX_EDGE` (default 768 px), which takes a typical 2000 x 1500 supplier photo down to 768 x 576 — about 7x fewer pixels — while keeping enough detail for shape, material, and proportion. Images already under the cap are passed through untouched, and transparency is preserved. Lower the value for cheaper runs, raise it if fine texture is being lost.
 
 ## Hosted images
 
@@ -90,10 +94,11 @@ OPENAI_MODEL=gpt-5.4
 OPENAI_IMAGE_MODEL=gpt-image-1
 OPENAI_IMAGE_QUALITY=medium
 OPENAI_IMAGE_SIZE=1024x1024
+REFERENCE_IMAGE_MAX_EDGE=768
 BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
 ```
 
-Only `OPENAI_API_KEY` is required. `BLOB_READ_WRITE_TOKEN` is required to export generated images.
+Only `OPENAI_API_KEY` is required. `BLOB_READ_WRITE_TOKEN` is required to export generated images. `REFERENCE_IMAGE_MAX_EDGE` is optional and defaults to 768.
 
 ```bash
 npm install
@@ -119,7 +124,7 @@ Endpoints:
 
 ```
 api/           Serverless endpoints, thin wrappers over server/
-server/        OpenAI calls, prompts, reference image fetching, blob upload
+server/        OpenAI calls, prompts, reference image fetching and resizing, blob upload
 src/html/      Saved-page parser
 src/review/    Approval model and approved-draft construction
 src/lib/       CSV, formatting, API client, file import

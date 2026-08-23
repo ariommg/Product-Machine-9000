@@ -1,4 +1,5 @@
 import { buildSeoDescription, buildSeoTitle, cleanProductTitle, slugify } from "../lib/productFormatting";
+import type { AiImageKind } from "../types/ai";
 import type { ExtractedProductData, ProductDraft, ProductSpecification } from "../types/product";
 
 export type ReviewStatus = "verified" | "needs-review" | "missing";
@@ -28,6 +29,8 @@ export type ReviewImageField = {
   blobPathname: string | null;
   hostedUrl: string | null;
   hostingError: string | null;
+  /** Which of the four shot types this is, so a single one can be regenerated. */
+  imageKind: AiImageKind | null;
   /** Source images are reference-only. Only generated images can reach Shopify. */
   kind: "source" | "ai-generated";
   label: string;
@@ -186,6 +189,7 @@ export const buildReviewState = (rawData: ExtractedProductData): ProductReviewSt
     blobPathname: null,
     hostedUrl: null,
     hostingError: null,
+    imageKind: null,
     kind: "source",
     label: `Källbild ${index + 1}`,
     url,

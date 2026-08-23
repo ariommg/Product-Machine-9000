@@ -11,8 +11,15 @@ import { buildCsvFilename, buildShopifyCsv, downloadCsvFile } from "./lib/shopif
 import type { AiImageCount, AiImageModel } from "./types/ai";
 
 export default function App() {
-  const { actions, activeProduct, exportableDrafts, hostedImageUrls, importError, isImporting, products } =
-    useSession();
+  const {
+    actions,
+    activeProduct,
+    exportableDrafts,
+    hostedImageHistory,
+    importError,
+    isImporting,
+    products,
+  } = useSession();
 
   const [imageModel, setImageModel] = useState<AiImageModel>("gpt-image-1");
   const [imageCount, setImageCount] = useState<AiImageCount>(4);
@@ -43,7 +50,7 @@ export default function App() {
 
   const hasUnexportedWork = products.length > 0 && sessionSignature !== exportedSignature;
 
-  useSessionExit({ hostedImageUrls, warnOnClose: hasUnexportedWork });
+  useSessionExit({ hostedImageUrls: hostedImageHistory, warnOnClose: hasUnexportedWork });
 
   const handleExport = () => {
     if (exportableDrafts.length === 0) {
@@ -59,7 +66,7 @@ export default function App() {
     setCleanupState("running");
     setCleanupError("");
     try {
-      await requestHostedImageDeletion(hostedImageUrls);
+      await requestHostedImageDeletion(hostedImageHistory);
       setCleanupState("done");
     } catch (error) {
       setCleanupState("idle");
@@ -143,7 +150,7 @@ export default function App() {
                     Importera filen i Shopify och kontrollera att bilderna syns. Rensa sedan de tillfälligt hostade
                     bilderna.
                   </p>
-                  {hostedImageUrls.length > 0 ? (
+                  {hostedImageHistory.length > 0 ? (
                     <div className="cleanup-row">
                       <button
                         className="button button-ghost"
@@ -154,7 +161,7 @@ export default function App() {
                         {cleanupState === "running" ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
                         {cleanupState === "done"
                           ? "Bilderna är rensade"
-                          : `Rensa ${hostedImageUrls.length} hostade bilder`}
+                          : `Rensa ${hostedImageHistory.length} hostade bilder`}
                       </button>
                       <span className="cleanup-hint">Rensas automatiskt när du stänger fliken.</span>
                     </div>

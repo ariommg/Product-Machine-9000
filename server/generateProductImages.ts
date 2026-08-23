@@ -9,9 +9,9 @@ import {
   parseReferenceImageUrls,
   sniffImageMimeType,
 } from "./lib/referenceImages.js";
+import { shrinkReferenceImages } from "./lib/shrinkReferenceImage.js";
 import type {
   AiGeneratedImage,
-  AiImageCount,
   AiImageGenerationResult,
   AiImageKind,
   AiImageModel,
@@ -21,8 +21,9 @@ import type { ExtractedProductData } from "../src/types/product.js";
 
 type GenerateProductImagesInput = {
   aiText: AiProductGenerationResult | null;
-  imageCount: unknown;
   imageModel: unknown;
+  /** Which shots to produce. One kind for a regeneration, up to four for a full run. */
+  kinds: unknown;
   product: ExtractedProductData;
   referenceImageFiles: unknown;
   referenceImageUrls: unknown;
@@ -51,8 +52,19 @@ const imageLabels: Record<AiImageKind, string> = {
 export const isAllowedImageModel = (model: unknown): model is AiImageModel =>
   typeof model === "string" && allowedImageModels.includes(model as AiImageModel);
 
-export const isAllowedImageCount = (imageCount: unknown): imageCount is AiImageCount =>
-  typeof imageCount === "number" && Number.isInteger(imageCount) && imageCount >= 1 && imageCount <= 4;
+const isAllowedImageKind = (kind: unknown): kind is AiImageKind =>
+  typeof kind === "string" && imageKinds.includes(kind as AiImageKind);
+
+/** Accepts one kind (regeneration) up to all four (full run), de-duplicated. */
+export const parseImageKinds = (kinds: unknown): AiImageKind[] => {
+  if (!Array.isArray(kinds) || kinds.length === 0 || !kinds.every(isAllowedImageKind)) {
+    throw new Error("Ogiltiga bildtyper. Använd hero, heroAngled, macro eller lifestyle.");
+  }
+
+  const unique = Array.from(new Set(kinds as AiImageKind[]));
+  // Keep canonical order so a full run always returns hero first.
+  return imageKinds.filter((kind) => unique.includes(kind));
+};
 
 export const getDefaultImageModel = (): AiImageModel => {
   const envModel = process.env.OPENAI_IMAGE_MODEL;
@@ -155,8 +167,8 @@ const uploadGeneratedImageToBlob = async (kind: AiImageKind, asset: GeneratedIma
 
 export const generateProductImages = async ({
   aiText,
-  imageCount,
   imageModel,
+  kinds,
   product,
   referenceImageFiles,
   referenceImageUrls,
@@ -167,10 +179,8 @@ export const generateProductImages = async ({
   if (!isAllowedImageModel(imageModel)) {
     throw new Error("Ogiltig bildmodell. Använd gpt-image-1 eller gpt-image-2.");
   }
-  if (!isAllowedImageCount(imageCount)) {
-    throw new Error("Ogiltigt antal bilder. Använd 1, 2, 3 eller 4.");
-  }
 
+  const requestedKinds = parseImageKinds(kinds);
   const imageQuality = getImageQuality();
   const imageSize = getImageSize();
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -200,14 +210,18 @@ export const generateProductImages = async ({
     );
   }
 
+  // Shrink once, before the fan-out: every image call re-sends every reference,
+  // so the saving is multiplied by the number of images being generated.
+  const { images: sizedReferenceImages } = await shrinkReferenceImages(allReferenceImages);
+
   const referenceFiles = await Promise.all(
-    allReferenceImages.map((referenceImage) =>
+    sizedReferenceImages.map((referenceImage) =>
       toFile(referenceImage.bytes, referenceImage.fileName, { type: referenceImage.mimeType }),
     ),
   );
 
   const entries = await Promise.all(
-    imageKinds.slice(0, imageCount).map(async (kind): Promise<[AiImageKind, AiGeneratedImage]> => {
+    requestedKinds.map(async (kind): Promise<[AiImageKind, AiGeneratedImage]> => {
       const prompt = buildImageGenerationPrompt(kind, product, aiText);
       const response =
         referenceFiles.length > 0
@@ -250,7 +264,7 @@ export const generateProductImages = async ({
 
   return {
     failedReferences: failures,
-    imageCount,
+    generatedKinds: requestedKinds,
     images: Object.fromEntries(entries) as AiImageGenerationResult["images"],
     referenceImageUrls: allReferenceImages.map((referenceImage) => referenceImage.url),
     usedReferenceImage: allReferenceImages.length > 0,

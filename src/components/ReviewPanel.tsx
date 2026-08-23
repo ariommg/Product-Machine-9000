@@ -164,8 +164,10 @@ export function ReviewPanel({
 
       <GeneratedImageSection
         images={generatedImages}
+        onRegenerate={(imageKind) => void actions.regenerateImage(product.id, imageModel, imageKind)}
         onToggle={(url) => actions.toggleGeneratedImageApproval(product.id, url)}
         onToggleAll={() => actions.toggleAllGeneratedImages(product.id)}
+        regeneratingKinds={product.regeneratingKinds}
       />
     </div>
   );

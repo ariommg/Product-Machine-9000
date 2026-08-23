@@ -1,8 +1,9 @@
-import { Check, ExternalLink, ImageOff, ImagePlus, Trash2 } from "lucide-react";
+import { Check, ExternalLink, ImageOff, ImagePlus, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent } from "react";
 import { isReferenceImageFile, readFileAsDataUrl } from "../lib/fileImport";
 import { isPublicShopifyImageUrl } from "../lib/shopifyCsv";
 import type { UserReferenceImage } from "../hooks/useSession";
+import type { AiImageKind } from "../types/ai";
 import type { ReviewImageField } from "../review/reviewWorkflow";
 
 type NewReferenceImage = { dataUrl: string; name: string; origin: UserReferenceImage["origin"] };
@@ -191,11 +192,19 @@ export function ReferenceImageSection({
 
 type GeneratedImageSectionProps = {
   images: ReviewImageField[];
+  onRegenerate: (imageKind: AiImageKind) => void;
   onToggle: (url: string) => void;
   onToggleAll: () => void;
+  regeneratingKinds: AiImageKind[];
 };
 
-export function GeneratedImageSection({ images, onToggle, onToggleAll }: GeneratedImageSectionProps) {
+export function GeneratedImageSection({
+  images,
+  onRegenerate,
+  onToggle,
+  onToggleAll,
+  regeneratingKinds,
+}: GeneratedImageSectionProps) {
   const exportable = images.filter((image) => isPublicShopifyImageUrl(image.url));
   const approvedCount = images.filter((image) => image.approved).length;
 
@@ -223,16 +232,39 @@ export function GeneratedImageSection({ images, onToggle, onToggleAll }: Generat
           <ul className="image-grid">
             {images.map((image) => {
               const canExport = isPublicShopifyImageUrl(image.url);
+              const isRegenerating = Boolean(image.imageKind && regeneratingKinds.includes(image.imageKind));
+
               return (
-                <li className={`image-card${image.approved ? " is-selected" : ""}`} key={image.url}>
+                <li
+                  className={`image-card${image.approved ? " is-selected" : ""}${isRegenerating ? " is-busy" : ""}`}
+                  key={`${image.imageKind ?? "image"}-${image.url}`}
+                >
                   <div className="image-frame">
                     <img alt={image.label} src={image.url} />
+                    {isRegenerating ? (
+                      <span className="image-busy">
+                        <Loader2 className="spin" size={20} />
+                      </span>
+                    ) : null}
                   </div>
                   <div className="image-meta">
                     <span className="image-label">{image.label}</span>
-                    <a className="image-link" download href={image.url} rel="noreferrer" target="_blank">
-                      Öppna <ExternalLink size={12} />
-                    </a>
+                    <div className="image-meta-actions">
+                      {image.imageKind ? (
+                        <button
+                          className="icon-button icon-button-neutral"
+                          disabled={isRegenerating}
+                          onClick={() => onRegenerate(image.imageKind as AiImageKind)}
+                          title={`Generera om ${image.label.toLowerCase()} (1 bildanrop)`}
+                          type="button"
+                        >
+                          <RefreshCw size={14} />
+                        </button>
+                      ) : null}
+                      <a className="image-link" download href={image.url} rel="noreferrer" target="_blank">
+                        Öppna <ExternalLink size={12} />
+                      </a>
+                    </div>
                   </div>
 
                   {canExport ? (

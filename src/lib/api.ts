@@ -1,9 +1,4 @@
-import type {
-  AiImageCount,
-  AiImageGenerationResult,
-  AiImageModel,
-  AiProductGenerationResult,
-} from "../types/ai";
+import type { AiImageGenerationResult, AiImageKind, AiImageModel, AiProductGenerationResult } from "../types/ai";
 import type { ExtractedProductData } from "../types/product";
 
 const postJson = async <T,>(url: string, payload: unknown): Promise<T> => {
@@ -43,8 +38,9 @@ export const requestProductText = (product: ExtractedProductData) =>
 
 export type ImageRequest = {
   aiText: AiProductGenerationResult | null;
-  imageCount: AiImageCount;
   imageModel: AiImageModel;
+  /** One kind regenerates a single shot; several run a full set. */
+  kinds: AiImageKind[];
   product: ExtractedProductData;
   referenceImageFiles: Array<{ dataUrl: string; name: string }>;
   referenceImageUrls: string[];
