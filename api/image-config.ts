@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sendJson } from "../server/lib/http.js";
 import { getDefaultImageModel } from "../server/generateProductImages.js";
+import { getHostedImageTtlDays } from "../server/cleanupExpiredImages.js";
 
 /** Non-secret defaults so the UI can start on the same model the server would pick. */
 export default async function handler(request: IncomingMessage, response: ServerResponse) {
@@ -10,6 +11,7 @@ export default async function handler(request: IncomingMessage, response: Server
   }
 
   sendJson(response, 200, {
+    hostedImageTtlDays: getHostedImageTtlDays(),
     hostingConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     imageModel: getDefaultImageModel(),
   });

@@ -107,3 +107,11 @@ Two things follow, and both must be preserved:
 - A single image can be regenerated on its own. Do not replace the whole set when one shot is wrong.
 
 Hosted image URLs are tracked for the whole session, including ones a regeneration replaced, so cleanup can still reach images no longer on screen.
+
+## Hosted image lifetime
+
+Hosted images must outlive the browser tab. The CSV is often imported into Shopify a day or two after export, and deleting on tab close breaks that. Do not reintroduce tab-close deletion.
+
+Images expire after `HOSTED_IMAGE_TTL_DAYS` (default 7), swept by a daily cron and by an opportunistic sweep on app start. Any sweep must only ever delete blobs already past the TTL, so it stays safe to call from anywhere.
+
+Generated images are stored as JPEG rather than the PNG OpenAI returns, roughly 9x smaller for photographic content. Transparency forces PNG, and the re-encode is skipped when it would not shrink the file. Encoding must never throw: fall back to the original bytes.

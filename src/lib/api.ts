@@ -17,6 +17,7 @@ const postJson = async <T,>(url: string, payload: unknown): Promise<T> => {
 };
 
 export type ImageConfig = {
+  hostedImageTtlDays: number;
   hostingConfigured: boolean;
   imageModel: AiImageModel;
 };
@@ -53,16 +54,8 @@ export const requestHostedImageDeletion = (urls: string[]) =>
   postJson<{ deletedUrls: string[] }>("/api/delete-hosted-images", { urls });
 
 /**
- * Fire-and-forget cleanup for tab close, where a normal fetch would be cancelled
- * before it leaves the browser.
+ * Sweeps images past their TTL. Safe to call on every app start: it only ever
+ * deletes what has already expired.
  */
-export const beaconHostedImageDeletion = (urls: string[]) => {
-  if (urls.length === 0 || typeof navigator.sendBeacon !== "function") {
-    return false;
-  }
-
-  return navigator.sendBeacon(
-    "/api/delete-hosted-images",
-    new Blob([JSON.stringify({ urls })], { type: "application/json" }),
-  );
-};
+export const requestExpiredImageCleanup = () =>
+  fetch("/api/cleanup-expired-images", { method: "POST" }).catch(() => undefined);

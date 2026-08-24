@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import cleanupExpiredImagesHandler from "./api/cleanup-expired-images.js";
 import deleteHostedImagesHandler from "./api/delete-hosted-images.js";
 import generateImagesHandler from "./api/generate-images.js";
 import generateProductHandler from "./api/generate-product.js";
@@ -10,6 +11,7 @@ const apiRoutes = {
   "/api/generate-images": generateImagesHandler,
   "/api/image-config": imageConfigHandler,
   "/api/delete-hosted-images": deleteHostedImagesHandler,
+  "/api/cleanup-expired-images": cleanupExpiredImagesHandler,
 };
 
 const serverEnvKeys = [

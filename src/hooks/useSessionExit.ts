@@ -1,24 +1,18 @@
 import { useEffect, useRef } from "react";
-import { beaconHostedImageDeletion } from "../lib/api";
-
-type SessionExitOptions = {
-  /** Blob URLs that would be orphaned if the tab closed right now. */
-  hostedImageUrls: string[];
-  warnOnClose: boolean;
-};
 
 /**
- * The session is deliberately memory-only, so closing the tab is the point of no
- * return: unexported products are lost, and any generated image left in blob
- * storage becomes unreachable. Warn first, then clean up on the way out.
+ * The session is memory-only, so closing the tab loses every unexported product.
+ * Hosted images are deliberately NOT deleted here — they need to outlive the tab
+ * so the CSV can be imported into Shopify a day or two later. They expire on
+ * their own instead.
  */
-export const useSessionExit = ({ hostedImageUrls, warnOnClose }: SessionExitOptions) => {
-  const stateRef = useRef({ hostedImageUrls, warnOnClose });
-  stateRef.current = { hostedImageUrls, warnOnClose };
+export const useSessionExit = (warnOnClose: boolean) => {
+  const warnRef = useRef(warnOnClose);
+  warnRef.current = warnOnClose;
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!stateRef.current.warnOnClose) {
+      if (!warnRef.current) {
         return;
       }
       event.preventDefault();
@@ -26,18 +20,7 @@ export const useSessionExit = ({ hostedImageUrls, warnOnClose }: SessionExitOpti
       event.returnValue = "";
     };
 
-    // pagehide fires after the user confirms they are leaving, which is the only
-    // moment the cleanup should actually run.
-    const handlePageHide = () => {
-      beaconHostedImageDeletion(stateRef.current.hostedImageUrls);
-    };
-
     window.addEventListener("beforeunload", handleBeforeUnload);
-    window.addEventListener("pagehide", handlePageHide);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      window.removeEventListener("pagehide", handlePageHide);
-    };
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 };

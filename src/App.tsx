@@ -6,7 +6,7 @@ import { ProductQueue } from "./components/ProductQueue";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { useSession } from "./hooks/useSession";
 import { useSessionExit } from "./hooks/useSessionExit";
-import { fetchImageConfig, requestHostedImageDeletion } from "./lib/api";
+import { fetchImageConfig, requestExpiredImageCleanup, requestHostedImageDeletion } from "./lib/api";
 import { buildCsvFilename, buildShopifyCsv, downloadCsvFile } from "./lib/shopifyCsv";
 import type { AiImageCount, AiImageModel } from "./types/ai";
 
@@ -24,16 +24,22 @@ export default function App() {
   const [imageModel, setImageModel] = useState<AiImageModel>("gpt-image-1");
   const [imageCount, setImageCount] = useState<AiImageCount>(4);
   const [hostingConfigured, setHostingConfigured] = useState(true);
+  const [hostedImageTtlDays, setHostedImageTtlDays] = useState(7);
   const [exportedSignature, setExportedSignature] = useState("");
   const [cleanupState, setCleanupState] = useState<"idle" | "running" | "done">("idle");
   const [cleanupError, setCleanupError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
+    // Opportunistic sweep of images past their TTL, so cleanup also happens when
+    // the app runs outside Vercel where the daily cron does not exist.
+    void requestExpiredImageCleanup();
+
     void fetchImageConfig().then((config) => {
       if (isMounted && config) {
         setImageModel(config.imageModel);
         setHostingConfigured(config.hostingConfigured);
+        setHostedImageTtlDays(config.hostedImageTtlDays);
       }
     });
     return () => {
@@ -50,7 +56,7 @@ export default function App() {
 
   const hasUnexportedWork = products.length > 0 && sessionSignature !== exportedSignature;
 
-  useSessionExit({ hostedImageUrls: hostedImageHistory, warnOnClose: hasUnexportedWork });
+  useSessionExit(hasUnexportedWork);
 
   const handleExport = () => {
     if (exportableDrafts.length === 0) {
@@ -147,8 +153,8 @@ export default function App() {
               {hasExported ? (
                 <Notice tone="success" title="CSV nedladdad">
                   <p>
-                    Importera filen i Shopify och kontrollera att bilderna syns. Rensa sedan de tillfälligt hostade
-                    bilderna.
+                    Importera filen i Shopify och kontrollera att bilderna syns. Bilderna ligger kvar i{" "}
+                    {hostedImageTtlDays} dagar och raderas sedan automatiskt, så du kan importera senare i veckan.
                   </p>
                   {hostedImageHistory.length > 0 ? (
                     <div className="cleanup-row">
@@ -163,7 +169,9 @@ export default function App() {
                           ? "Bilderna är rensade"
                           : `Rensa ${hostedImageHistory.length} hostade bilder`}
                       </button>
-                      <span className="cleanup-hint">Rensas automatiskt när du stänger fliken.</span>
+                      <span className="cleanup-hint">
+                        Behövs bara om du vill frigöra utrymme direkt.
+                      </span>
                     </div>
                   ) : null}
                   {cleanupError ? <p className="cleanup-error">{cleanupError}</p> : null}

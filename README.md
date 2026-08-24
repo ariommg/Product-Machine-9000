@@ -77,12 +77,27 @@ To keep that in check, references are downscaled before being sent. The longest 
 
 ## Hosted images
 
-Generated images are uploaded to Vercel Blob so Shopify can download them during import. They do not expire on their own, so they are cleaned up two ways:
+Generated images are uploaded to Vercel Blob so Shopify can download them during import.
 
-- A **Rensa hostade bilder** button appears after export.
-- Closing the tab fires an automatic cleanup, since the URLs are unrecoverable once the session ends.
+**They expire after 7 days** (`HOSTED_IMAGE_TTL_DAYS`), which means you can export today and import into Shopify a day or two later without the images going missing. Nothing is deleted when you close the tab.
 
-Only clear them after Shopify has imported the images and you can see them in the admin.
+Two things sweep expired images, and both only ever delete what is already past the TTL:
+
+- A daily Vercel Cron job on `/api/cleanup-expired-images`, configured in `vercel.json`.
+- An opportunistic sweep when the app is opened, so cleanup still happens when running locally where there is no cron.
+
+A **Rensa hostade bilder** button is still there after export if you want the space back immediately.
+
+Images are stored as JPEG rather than the PNG that OpenAI returns, at `GENERATED_IMAGE_QUALITY` (default 88). For photographic content that is roughly **9x smaller** with no visible difference after Shopify re-encodes on import. Images with transparency stay PNG, and the re-encode is skipped whenever it would not actually make the file smaller.
+
+Rough storage, measured on real photos at 1024x1024:
+
+| Stored as | Per image | Per product (4 images) | Products per GB |
+| --- | --- | --- | --- |
+| PNG, as OpenAI returns it | ~1.4 MB | ~5.4 MB | ~190 |
+| JPEG q88, what is stored now | ~130 KB | ~0.5 MB | ~2,000 |
+
+With a 7-day TTL, only what you generated in the last week is ever held.
 
 ## Development
 
@@ -95,6 +110,8 @@ OPENAI_IMAGE_MODEL=gpt-image-1
 OPENAI_IMAGE_QUALITY=medium
 OPENAI_IMAGE_SIZE=1024x1024
 REFERENCE_IMAGE_MAX_EDGE=768
+GENERATED_IMAGE_QUALITY=88
+HOSTED_IMAGE_TTL_DAYS=7
 BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
 ```
 
@@ -111,13 +128,16 @@ npm run typecheck
 
 Set the same variables in Project Settings. Never add `VITE_OPENAI_API_KEY` — the key must stay server-side.
 
+`vercel.json` registers the daily cleanup cron. Set `CRON_SECRET` if you want `/api/cleanup-expired-images` to reject calls that do not come from Vercel Cron; leave it unset to keep the in-app sweep working.
+
 Endpoints:
 
 | Route | Purpose |
 | --- | --- |
 | `/api/generate-product` | Swedish copy and specifications |
 | `/api/generate-images` | Image generation and blob upload |
-| `/api/delete-hosted-images` | Cleanup of hosted images you confirm |
+| `/api/delete-hosted-images` | Immediate cleanup of hosted images you confirm |
+| `/api/cleanup-expired-images` | Sweeps images past the TTL. Run daily by cron |
 | `/api/image-config` | Non-secret defaults for the UI |
 
 ## Layout

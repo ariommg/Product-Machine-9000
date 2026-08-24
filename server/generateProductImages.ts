@@ -9,6 +9,8 @@ import {
   parseReferenceImageUrls,
   sniffImageMimeType,
 } from "./lib/referenceImages.js";
+import { encodeGeneratedImage } from "./lib/generatedImages.js";
+import { HOSTED_IMAGE_PREFIX } from "./cleanupExpiredImages.js";
 import { shrinkReferenceImages } from "./lib/shrinkReferenceImage.js";
 import type {
   AiGeneratedImage,
@@ -120,16 +122,6 @@ const imageToGeneratedAsset = async (image: { b64_json?: string; url?: string })
   throw new Error("Bildgenereringen returnerade ingen bilddata.");
 };
 
-const extensionForContentType = (contentType: string) => {
-  if (contentType === "image/png") {
-    return "png";
-  }
-  if (contentType === "image/webp") {
-    return "webp";
-  }
-  return "jpg";
-};
-
 /**
  * Shopify imports images by downloading them, so a generated image is only usable
  * once it has a public URL. Without a blob token it stays preview-only.
@@ -148,11 +140,12 @@ const uploadGeneratedImageToBlob = async (kind: AiImageKind, asset: GeneratedIma
   }
 
   try {
-    const extension = extensionForContentType(asset.contentType);
+    // Re-encode before upload: this is what is stored, and what Shopify downloads.
+    const encoded = await encodeGeneratedImage(asset.bytes);
     const blob = await put(
-      `product-machine-9000/ai-images/${Date.now()}-${randomUUID()}-${kind}.${extension}`,
-      Buffer.from(asset.bytes),
-      { access: "public", addRandomSuffix: false, contentType: asset.contentType },
+      `${HOSTED_IMAGE_PREFIX}${Date.now()}-${randomUUID()}-${kind}.${encoded.extension}`,
+      Buffer.from(encoded.bytes),
+      { access: "public", addRandomSuffix: false, contentType: encoded.contentType },
     );
 
     return { blobPathname: blob.pathname, hostedUrl: blob.url, hostingError: null };
