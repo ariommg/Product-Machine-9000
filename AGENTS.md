@@ -114,4 +114,6 @@ Hosted images must outlive the browser tab. The CSV is often imported into Shopi
 
 Images expire after `HOSTED_IMAGE_TTL_DAYS` (default 7), swept by a daily cron and by an opportunistic sweep on app start. Any sweep must only ever delete blobs already past the TTL, so it stays safe to call from anywhere.
 
-Generated images are stored as JPEG rather than the PNG OpenAI returns, roughly 9x smaller for photographic content. Transparency forces PNG, and the re-encode is skipped when it would not shrink the file. Encoding must never throw: fall back to the original bytes.
+Generated images are re-encoded before upload, controlled by `GENERATED_IMAGE_FORMAT`: JPEG q95 by default, WebP lossless when set to `lossless`. Quality 95 is deliberate, not arbitrary — a product on a plain background is a hard edge over a flat area, where JPEG ringing is worst, and 88 leaves a worst-case channel error of 33/255 against 16/255 at 95.
+
+Transparency must keep an alpha-capable format in both modes, the re-encode is skipped when it would not shrink the file, and encoding must never throw: fall back to the original bytes.

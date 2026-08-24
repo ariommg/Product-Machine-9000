@@ -88,16 +88,23 @@ Two things sweep expired images, and both only ever delete what is already past 
 
 A **Rensa hostade bilder** button is still there after export if you want the space back immediately.
 
-Images are stored as JPEG rather than the PNG that OpenAI returns, at `GENERATED_IMAGE_QUALITY` (default 88). For photographic content that is roughly **9x smaller** with no visible difference after Shopify re-encodes on import. Images with transparency stay PNG, and the re-encode is skipped whenever it would not actually make the file smaller.
+### Stored format
 
-Rough storage, measured on real photos at 1024x1024:
+OpenAI returns PNG. Shopify accepts JPEG, PNG and WebP and re-encodes everything for delivery, so what is stored here is only the master Shopify downloads once.
 
-| Stored as | Per image | Per product (4 images) | Products per GB |
-| --- | --- | --- | --- |
-| PNG, as OpenAI returns it | ~1.4 MB | ~5.4 MB | ~190 |
-| JPEG q88, what is stored now | ~130 KB | ~0.5 MB | ~2,000 |
+`GENERATED_IMAGE_FORMAT` picks how that master is stored:
 
-With a 7-day TTL, only what you generated in the last week is ever held.
+| Mode | Format | Per image | Per product | Products per GB | Loss vs the model output |
+| --- | --- | --- | --- | --- | --- |
+| `jpeg` (default) | JPEG q95 | ~220 KB | ~0.9 MB | ~1,200 | RMSE 0.82, worst channel 11/255 |
+| `lossless` | WebP lossless | ~863 KB | ~3.4 MB | ~300 | none, bit-exact |
+| — | PNG, unconverted | ~1.4 MB | ~5.4 MB | ~190 | none |
+
+Quality defaults to 95 rather than the more usual 88 on purpose. A product on a plain background is a hard edge over a flat area, which is exactly where JPEG ringing shows: at 88 the worst-case channel error at those edges is 33/255, at 95 it is 16/255, for about 20% more bytes.
+
+If you would rather keep exactly what the model produced, set `GENERATED_IMAGE_FORMAT=lossless`. It is still smaller than PNG, and with a 7-day window ~300 products per GB is not a real constraint.
+
+Images with transparency keep an alpha-capable format in both modes, and the re-encode is skipped whenever it would not actually make the file smaller.
 
 ## Development
 
@@ -110,7 +117,8 @@ OPENAI_IMAGE_MODEL=gpt-image-1
 OPENAI_IMAGE_QUALITY=medium
 OPENAI_IMAGE_SIZE=1024x1024
 REFERENCE_IMAGE_MAX_EDGE=768
-GENERATED_IMAGE_QUALITY=88
+GENERATED_IMAGE_FORMAT=jpeg
+GENERATED_IMAGE_QUALITY=95
 HOSTED_IMAGE_TTL_DAYS=7
 BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
 ```
