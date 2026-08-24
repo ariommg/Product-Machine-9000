@@ -50,30 +50,29 @@ export const stripHtml = (value: string) => normalizeWhitespace(value.replace(/<
 /**
  * Shopify renders the Description column as HTML, so plain newlines collapse into
  * one run-on paragraph. Emit real markup instead.
+ *
+ * Specifications are deliberately not included here: they go to their own
+ * metafield so the description stays pure marketing copy.
  */
-export const buildDescriptionHtml = (description: string, specifications: ProductSpecification[]) => {
-  const paragraphs = description
-    .split(/\n{2,}|\r\n{2,}/)
+export const buildDescriptionHtml = (description: string) =>
+  description
+    .split(/\r?\n{2,}/)
     .map((paragraph) => normalizeWhitespace(paragraph))
     .filter(Boolean)
-    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`);
+    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+    // Joined without newlines so each product stays on one physical CSV line.
+    .join("");
 
-  const usableSpecifications = specifications.filter(
-    (specification) => specification.name.trim() && specification.value.trim(),
-  );
-
-  if (usableSpecifications.length === 0) {
-    return paragraphs.join("");
-  }
-
-  const specificationItems = usableSpecifications.map(
-    (specification) =>
-      `<li><strong>${escapeHtml(specification.name.trim())}:</strong> ${escapeHtml(specification.value.trim())}</li>`,
-  );
-
-  // Joined without newlines so each product stays on one physical CSV line.
-  return [...paragraphs, "<h4>Specifikationer</h4>", "<ul>", ...specificationItems, "</ul>"].join("");
-};
+/**
+ * Value for the specifications metafield. Shopify's CSV importer only accepts
+ * plain text metafield types, so this is one "Name: Value" per line rather than
+ * markup. Themes render multi-line text with a line break per line.
+ */
+export const buildSpecificationsText = (specifications: ProductSpecification[]) =>
+  specifications
+    .filter((specification) => specification.name.trim() && specification.value.trim())
+    .map((specification) => `${specification.name.trim()}: ${specification.value.trim()}`)
+    .join("\n");
 
 export const formatSpecificationsForCopy = (specifications: ProductSpecification[]) =>
   specifications.map((item) => `- ${item.name}: ${item.value}`).join("\n");

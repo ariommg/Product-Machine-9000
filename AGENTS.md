@@ -67,9 +67,12 @@ Keep the current column set. It is the one that imports cleanly.
 - Charge tax `FALSE`
 - Inventory tracker blank, inventory not tracked
 - Supplier price never becomes the Shopify price
-- No metafield columns
+- Exactly one metafield column, for the specifications
 - Only public `https` image URLs, never base64, blob, or localhost
-- Description is emitted as HTML on a single physical line
+- Description is emitted as HTML on a single physical line, and contains no specifications
+- Specifications go to the specifications metafield column, one `Namn: Värde` per line
+- The metafield definition in Shopify must be "Multi-line text". Shopify's CSV importer does not support `rich_text_field`, so do not emit rich-text JSON into a CSV column
+- Image-only continuation rows must leave the metafield column empty
 
 Changing `SHOPIFY_CSV_HEADERS` requires re-testing a real Shopify import.
 

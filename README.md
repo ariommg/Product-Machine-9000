@@ -27,7 +27,19 @@ These are fixed in code, not in the prompt, so the AI cannot talk itself out of 
 - Only images with a public `https` URL reach the CSV. Never base64, blob, or localhost URLs.
 - Nothing is exported unless you ticked Approve on it.
 
-The CSV uses the column set that imports cleanly into Shopify today. It has no metafield columns. Do not reorder or extend `SHOPIFY_CSV_HEADERS` without re-testing a real import first.
+The CSV uses the column set that imports cleanly into Shopify today, plus one metafield column for the specifications. Do not reorder or extend `SHOPIFY_CSV_HEADERS` without re-testing a real import first.
+
+### Specifications metafield
+
+Approved specifications go into a product metafield rather than the description, so the description stays pure marketing copy.
+
+The column is `Specifikationer (product.metafields.custom.specifikationer)`. Set `VITE_SPECS_METAFIELD` to `namespace.key` if yours differs — you can find it under **Settings > Custom data > Products** in Shopify.
+
+**The definition in Shopify must be type "Multi-line text".** Shopify's CSV importer only accepts plain metafield types; `rich_text_field` is not among the supported types, because rich text stores a nested JSON document rather than text. A rich text definition will not be populated by this export.
+
+The value is one `Namn: Värde` per line. Themes render multi-line text with a line break per line.
+
+Specifications are only visible on your storefront if your theme renders that metafield. Add it through the theme editor, or via a metafield dynamic source on a rich text block.
 
 ## Extraction
 

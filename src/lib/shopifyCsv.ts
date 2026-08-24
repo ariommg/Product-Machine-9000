@@ -1,12 +1,25 @@
-import { buildDescriptionHtml } from "./productFormatting";
+import { buildDescriptionHtml, buildSpecificationsText } from "./productFormatting";
 import type { ProductDraft } from "../types/product";
 
 /**
- * The exact column set from the Shopify export that imports cleanly today.
- * Metafield columns are deliberately absent. Do not reorder or extend without
+ * The specifications metafield.
+ *
+ * Shopify's CSV importer only accepts plain metafield types — rich_text_field is
+ * NOT among them — so the definition in Shopify must be "Multi-line text".
+ * Namespace and key are found under Settings > Custom data > Products.
+ * Override per deployment with VITE_SPECS_METAFIELD, formatted "namespace.key".
+ */
+const SPECS_METAFIELD_LABEL = "Specifikationer";
+const SPECS_METAFIELD_PATH = import.meta.env?.VITE_SPECS_METAFIELD || "custom.specifikationer";
+
+export const SPECS_METAFIELD_HEADER = `${SPECS_METAFIELD_LABEL} (product.metafields.${SPECS_METAFIELD_PATH})`;
+
+/**
+ * The exact column set from the Shopify export that imports cleanly today,
+ * plus the specifications metafield column. Do not reorder or extend without
  * re-testing a real Shopify import first.
  */
-export const SHOPIFY_CSV_HEADERS = [
+const BASE_CSV_HEADERS = [
   "Title",
   "URL handle",
   "Description",
@@ -65,8 +78,9 @@ export const SHOPIFY_CSV_HEADERS = [
   "Google Shopping / Custom label 4",
 ] as const;
 
-type ShopifyCsvHeader = (typeof SHOPIFY_CSV_HEADERS)[number];
-type ShopifyCsvRow = Partial<Record<ShopifyCsvHeader, string>>;
+export const SHOPIFY_CSV_HEADERS: string[] = [...BASE_CSV_HEADERS, SPECS_METAFIELD_HEADER];
+
+type ShopifyCsvRow = Record<string, string>;
 
 const escapeCsvValue = (value = "") => `"${value.replace(/"/g, '""')}"`;
 
@@ -96,7 +110,7 @@ const buildMainProductRow = (draft: ProductDraft): ShopifyCsvRow => {
   return {
     Title: draft.title,
     "URL handle": draft.handle,
-    Description: buildDescriptionHtml(draft.description, draft.specifications),
+    Description: buildDescriptionHtml(draft.description),
     Vendor: "",
     "Product category": "",
     Type: "",
@@ -124,6 +138,8 @@ const buildMainProductRow = (draft: ProductDraft): ShopifyCsvRow => {
     "Google Shopping / Manufacturer part number (MPN)": "",
     "Google Shopping / Condition": "New",
     "Google Shopping / Custom product": "FALSE",
+    // Specs live here rather than in the description.
+    [SPECS_METAFIELD_HEADER]: buildSpecificationsText(draft.specifications),
   };
 };
 
