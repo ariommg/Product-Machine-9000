@@ -39,7 +39,15 @@ The column is `Specifikationer (product.metafields.custom.specifikationer)`. Set
 
 The value is one `Namn: Värde` per line. Themes render multi-line text with a line break per line.
 
-Specifications are only visible on your storefront if your theme renders that metafield. Add it through the theme editor, or via a metafield dynamic source on a rich text block.
+Specifications are only visible on your storefront if your theme renders that metafield.
+
+[`shopify/specifications.liquid`](shopify/specifications.liquid) renders them as a bullet list with the name in bold. Either paste it into a **Custom Liquid** block on the product template in the theme editor, or save it as `snippets/specifications.liquid` and render it from `sections/main-product.liquid`:
+
+```liquid
+{% render 'specifications', product: product %}
+```
+
+It splits on the first `": "` only, so a value containing its own colon stays intact, and a line with no colon renders as a plain bullet.
 
 ## Extraction
 
@@ -164,6 +172,7 @@ Endpoints:
 
 ```
 api/           Serverless endpoints, thin wrappers over server/
+shopify/       Liquid for rendering the specifications metafield in your theme
 server/        OpenAI calls, prompts, reference image fetching and resizing, blob upload
 src/html/      Saved-page parser
 src/review/    Approval model and approved-draft construction

@@ -1,0 +1,84 @@
+{%- comment -%}
+  Renders the Specifikationer metafield as a bullet list.
+
+  The metafield is a multi-line text field holding one "Namn: Värde" per line,
+  because Shopify's CSV importer cannot populate a rich text metafield.
+
+  Two ways to use this:
+
+  1. No code files — in the theme editor, add a "Custom Liquid" block to the
+     product template and paste the contents of this file into it.
+  2. As a snippet — save as snippets/specifications.liquid and render it from
+     sections/main-product.liquid with:
+       {% render 'specifications', product: product %}
+
+  If your namespace or key differs, change it in the assign below. You will
+  find it under Settings > Custom data > Products in Shopify.
+{%- endcomment -%}
+
+{%- assign specs = product.metafields.custom.specifikationer.value -%}
+
+{%- if specs != blank -%}
+  {%- comment -%}
+    newline_to_br gives "<br />" on Shopify, but splitting on the bare "<br"
+    and stripping whatever closing form follows also survives "<br>" and "<br/>".
+  {%- endcomment -%}
+  {%- assign spec_lines = specs | newline_to_br | split: '<br' -%}
+
+  <div class="product-specifications">
+    <h3 class="product-specifications__title">Specifikationer</h3>
+
+    <ul class="product-specifications__list">
+      {%- for spec_line in spec_lines -%}
+        {%- assign row = spec_line | remove_first: ' />' | remove_first: '/>' | remove_first: '>' | strip -%}
+
+        {%- if row != blank -%}
+          {%- comment -%}
+            Split on the first ": " only, so a value that itself contains a
+            colon (for example "Mått: 30 x 20 cm, djup: 8 cm") stays intact.
+          {%- endcomment -%}
+          {%- assign spec_name = row | split: ': ' | first -%}
+          {%- assign spec_value = row | remove_first: spec_name | remove_first: ': ' | strip -%}
+
+          <li class="product-specifications__item">
+            {%- if spec_value != blank -%}
+              <span class="product-specifications__name">{{ spec_name | escape }}:</span>
+              <span class="product-specifications__value">{{ spec_value | escape }}</span>
+            {%- else -%}
+              {%- comment -%} A line with no "Name: Value" shape, such as "Diskmaskinssäker". {%- endcomment -%}
+              <span class="product-specifications__value">{{ row | escape }}</span>
+            {%- endif -%}
+          </li>
+        {%- endif -%}
+      {%- endfor -%}
+    </ul>
+  </div>
+
+  <style>
+    .product-specifications__list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .product-specifications__item {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    }
+
+    .product-specifications__item:last-child {
+      border-bottom: 0;
+    }
+
+    .product-specifications__name {
+      flex: 0 0 40%;
+      font-weight: 600;
+    }
+
+    .product-specifications__value {
+      flex: 1;
+    }
+  </style>
+{%- endif -%}
