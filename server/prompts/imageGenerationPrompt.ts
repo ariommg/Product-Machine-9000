@@ -31,6 +31,28 @@ const KIND_INSTRUCTIONS: Record<AiImageKind, string> = {
   lifestyle: `LIFESTYLE SHOT. The product in natural use, in the setting where this specific kind of product actually belongs. Infer that setting from the product itself and never default to a kitchen. Realistic daylight, uncluttered and tidy surroundings, calm modern styling. Hands may appear if they show how the product is used, but no faces and no recognisable people.`,
 };
 
+/**
+ * An extra colour is rendered from two references: the finished main hero, for
+ * angle, framing and light, and the colour's own swatch, for colour and print.
+ * The swatch is the source of truth for colour because a colour name is
+ * ambiguous ("green" is a hundred greens) and many "colours" are prints.
+ */
+export const buildVariantImagePrompt = (
+  variantName: string,
+  product: ExtractedProductData,
+  aiText: AiProductGenerationResult | null,
+) =>
+  [
+    "Create a realistic ecommerce product photograph for an online store.",
+    `You receive two reference images.
+Image 1 is the finished hero photo of this product in another colour. Recreate that photo: the same camera angle, framing, crop, background, lighting and shadow, and the same product shape, proportions and construction.
+Image 2 shows the colour version to produce. Take the colour, print, pattern, motif and surface finish exclusively from image 2 and apply them to the product, matching them as exactly as possible, including the placement and scale of any pattern.
+Image 2 may be framed differently, show the product folded or worn, or include props or other items. Take only the product's colour and pattern from it, never its framing, background or props.
+The colour is called "${variantName}" in the store. Image 2 is the source of truth; the name is only a hint.`,
+    OUTPUT_RULES,
+    `Product context: ${JSON.stringify(imageProductContext(product, aiText))}`,
+  ].join("\n\n");
+
 export const buildImageGenerationPrompt = (
   kind: AiImageKind,
   product: ExtractedProductData,

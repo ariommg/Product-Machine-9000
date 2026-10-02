@@ -55,6 +55,8 @@ Keep these strictly separated from product specifications, in their own fields:
 
 Package dimensions are never product dimensions. Package weight is never product weight.
 
+Variants come from `product.sku.skuAttrs`, and the combinations that exist from `product.sku.skuInfoMap`. Options with a single value are skipped. The option that drives images is chosen from the supplier's display type (`IMAGE` or `COLOR`), never from its name.
+
 Do not use page title, navbar text, or full page text as primary product data when structured data exists.
 
 ## Shopify CSV rules
@@ -73,6 +75,8 @@ Keep the current column set. It is the one that imports cleanly.
 - Specifications go to the specifications metafield column, one `Namn: Värde` per line
 - The metafield definition in Shopify must be "Multi-line text". Shopify's CSV importer does not support `rich_text_field`, so do not emit rich-text JSON into a CSV column
 - Image-only continuation rows must leave the metafield column empty
+- Variants use the existing `Option1`–`Option3` columns, never new headers. Only approved values, and only combinations the supplier sells. Variant continuation rows leave product-level columns and the metafield empty
+- A product with no approved variant values exports exactly as a single-variant product
 
 Changing `SHOPIFY_CSV_HEADERS` requires re-testing a real Shopify import.
 
@@ -90,11 +94,15 @@ Nothing reaches the CSV unless the user ticked Approve on it. This applies to th
 
 Editing an approved field un-approves it.
 
+Variant values and group names follow the same rule. Nothing is approved on import, and an AI rename un-approves the value.
+
 ## Images
 
 Source images and user-supplied reference images are reference-only and can never be exported.
 
 Only generated images are exportable, and only once they have a public hosted URL.
+
+With variants, the main colour gets the full set and every other approved colour gets a single hero, generated from exactly two references: the main hero and that colour's own swatch. The swatch, not the colour name, decides the colour. Do not fan extra colours out into full sets by default.
 
 Reference downloads must use browser-shaped request headers. Marketplace CDNs return an AVIF or a block page to anything that looks automated. Fetch references sequentially, retry connection resets, and sniff the magic bytes rather than trusting the content-type header.
 

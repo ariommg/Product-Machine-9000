@@ -3,7 +3,6 @@ import { useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent
 import { isReferenceImageFile, readFileAsDataUrl } from "../lib/fileImport";
 import { isPublicShopifyImageUrl } from "../lib/shopifyCsv";
 import type { UserReferenceImage } from "../hooks/useSession";
-import type { AiImageKind } from "../types/ai";
 import type { ReviewImageField } from "../review/reviewWorkflow";
 
 type NewReferenceImage = { dataUrl: string; name: string; origin: UserReferenceImage["origin"] };
@@ -192,18 +191,19 @@ export function ReferenceImageSection({
 
 type GeneratedImageSectionProps = {
   images: ReviewImageField[];
-  onRegenerate: (imageKind: AiImageKind) => void;
+  isBusy: (image: ReviewImageField) => boolean;
+  /** A set shot regenerates by kind; an extra colour's hero regenerates by colour. */
+  onRegenerate: (image: ReviewImageField) => void;
   onToggle: (url: string) => void;
   onToggleAll: () => void;
-  regeneratingKinds: AiImageKind[];
 };
 
 export function GeneratedImageSection({
   images,
+  isBusy,
   onRegenerate,
   onToggle,
   onToggleAll,
-  regeneratingKinds,
 }: GeneratedImageSectionProps) {
   const exportable = images.filter((image) => isPublicShopifyImageUrl(image.url));
   const approvedCount = images.filter((image) => image.approved).length;
@@ -232,12 +232,12 @@ export function GeneratedImageSection({
           <ul className="image-grid">
             {images.map((image) => {
               const canExport = isPublicShopifyImageUrl(image.url);
-              const isRegenerating = Boolean(image.imageKind && regeneratingKinds.includes(image.imageKind));
+              const isRegenerating = isBusy(image);
 
               return (
                 <li
                   className={`image-card${image.approved ? " is-selected" : ""}${isRegenerating ? " is-busy" : ""}`}
-                  key={`${image.imageKind ?? "image"}-${image.url}`}
+                  key={`${image.variantValueId ?? ""}-${image.imageKind ?? "image"}-${image.url}`}
                 >
                   <div className="image-frame">
                     <img alt={image.label} src={image.url} />
@@ -254,7 +254,7 @@ export function GeneratedImageSection({
                         <button
                           className="icon-button icon-button-neutral"
                           disabled={isRegenerating}
-                          onClick={() => onRegenerate(image.imageKind as AiImageKind)}
+                          onClick={() => onRegenerate(image)}
                           title={`Generera om ${image.label.toLowerCase()} (1 bildanrop)`}
                           type="button"
                         >

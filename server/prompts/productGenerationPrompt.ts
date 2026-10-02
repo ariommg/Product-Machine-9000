@@ -40,15 +40,48 @@ const customerSafeProductFacts = (product: ExtractedProductData) => ({
     name: specification.name,
     value: specification.value,
   })),
+  variantOptions: product.variantOptions.map((option) => ({
+    id: option.id,
+    name: option.name,
+    values: option.values.map((value) => ({
+      id: value.id,
+      name: value.name,
+      ...(value.hexColor ? { hexColor: value.hexColor } : {}),
+    })),
+  })),
 });
+
+const variantSection = (product: ExtractedProductData) =>
+  product.variantOptions.length === 0
+    ? `
+VARIANTER
+Produkten har inga varianter. Returnera en tom lista för options.`
+    : `
+VARIANTER
+Produkten säljs i varianter, listade under variantOptions. Returnera i options ett
+svenskt namn för varje grupp och för varje värde, med exakt samma id som i datan.
+- Gruppnamn ska vara korta och vanliga i svensk e-handel, till exempel "Färg",
+  "Storlek" eller "Modell". Välj efter vad värdena faktiskt beskriver, inte efter
+  leverantörens gruppnamn: en grupp som heter "color" men innehåller mått är en storlek.
+- Värdenamn ska vara korta, högst fyra ord, och unika inom sin grupp.
+- När ett värde har en bild (se bilderna efter den här texten) är bilden facit.
+  Är leverantörens namn meningslöst, till exempel en siffra eller en kod, beskriv
+  det som syns: färg och eventuellt mönster eller motiv.
+- Mått, storlekar och enheter behålls exakt. Översätt bara orden runt dem.
+- Ta bort säljfraser och instruktioner till köparen ur namnen.
+- Hittar du inget rimligt namn, behåll leverantörens namn och lägg till en rad i needsReview.`;
+
+/** Lines that introduce each swatch picture sent alongside the prompt. */
+export const swatchCaption = (optionName: string, valueId: string, valueName: string) =>
+  `Bild för värde id ${valueId} i gruppen "${optionName}" (leverantörens namn: "${valueName}"):`;
 
 export const buildProductGenerationPrompt = (product: ExtractedProductData) => `
 Du skriver produkttexter för en svensk e-handelsbutik.
 
 UPPGIFT
 Omvandla rådata från en produktsida till färdig svensk produkttext.
-Generera endast: titel, beskrivning och rensade specifikationer.
-Generera inte SEO-fält, taggar, kategori, varianter, priser eller bildprompter.
+Generera endast: titel, beskrivning, rensade specifikationer och svenska namn på varianter.
+Generera inte SEO-fält, taggar, kategori, nya varianter, priser eller bildprompter.
 
 SPRÅK
 All output ska vara på svenska, oavsett vilket språk källdatan är på.
@@ -87,6 +120,8 @@ SPECIFIKATIONER
 - Sätt confidence "high" när värdet står tydligt i källdatan, "medium" när det är
   omformulerat, "low" när det är osäkert.
 - Hoppa över rader som är tomma, "N/A", "customized" eller liknande platshållare.
+- Varianternas värden, som färger och storlekar, hör hemma i options, inte i specifikationerna.
+${variantSection(product)}
 
 TON
 Skriv som en etablerad svensk butik som säljer produkten själv.

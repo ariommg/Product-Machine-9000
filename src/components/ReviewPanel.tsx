@@ -4,8 +4,18 @@ import { GeneratedImageSection, ReferenceImageSection, SourceImageSection } from
 import { Notice } from "./Notice";
 import { SpecificationSection } from "./SpecificationSection";
 import { TextFieldSection } from "./TextFieldSection";
+import { VariantSection } from "./VariantSection";
 import { MAX_REFERENCE_IMAGES, type SessionProduct, type useSession } from "../hooks/useSession";
-import type { AiImageCount, AiImageModel } from "../types/ai";
+import {
+  buildDraftVariants,
+  mainHeroImage,
+  mainVariantValue,
+  variantExportIssues,
+  variantHeroImage,
+  variantReference,
+  visualOption,
+} from "../review/reviewWorkflow";
+import type { AiImageCount, AiImageKind, AiImageModel } from "../types/ai";
 
 type ReviewPanelProps = {
   actions: ReturnType<typeof useSession>["actions"];
@@ -30,7 +40,19 @@ export function ReviewPanel({
   const { rawData } = product.reviewState;
   const sourceImages = product.reviewState.images.filter((image) => image.kind === "source");
   const generatedImages = product.reviewState.images.filter((image) => image.kind === "ai-generated");
-  const referenceCount = product.selectedSourceImageUrls.length + product.selectedReferenceImageIds.length;
+  const mainValue = mainVariantValue(product.reviewState);
+  const mainReference = mainValue ? variantReference(mainValue) : null;
+  const mainReferenceIsExtra = Boolean(
+    mainReference && (mainReference.file || !product.selectedSourceImageUrls.includes(mainReference.url)),
+  );
+  const referenceCount =
+    product.selectedSourceImageUrls.length + product.selectedReferenceImageIds.length + Number(mainReferenceIsExtra);
+
+  const colourOption = visualOption(product.reviewState);
+  const mainHero = mainHeroImage(product.reviewState);
+  const heroByValueId = Object.fromEntries(
+    (colourOption?.values ?? []).map((value) => [value.id, variantHeroImage(product.reviewState, value.id) ?? undefined]),
+  );
 
   return (
     <div className="review stack">
@@ -99,6 +121,13 @@ export function ReviewPanel({
 
       {product.error ? <Notice tone="error">{product.error}</Notice> : null}
 
+      {mainReference && product.selectedSourceImageUrls.length > 0 ? (
+        <Notice tone="info">
+          Huvudfärgens egen bild ({mainValue?.name || mainValue?.supplierName}) används automatiskt som referens. Valda
+          källbilder kan visa en annan färg. Avmarkera dem om bilderna får fel färg.
+        </Notice>
+      ) : null}
+
       {product.aiImages?.failedReferences.length ? (
         <Notice tone="warning" title="Vissa referensbilder kunde inte hämtas">
           <ul className="notice-list">
@@ -147,6 +176,28 @@ export function ReviewPanel({
         specifications={product.reviewState.specifications}
       />
 
+      <VariantSection
+        baseHeroValueId={mainHero?.variantValueId ?? null}
+        exportIssues={variantExportIssues(product.reviewState)}
+        failures={product.variantImageFailures}
+        generatingValueIds={product.generatingVariantIds}
+        hasMainHero={Boolean(mainHero)}
+        heroByValueId={heroByValueId}
+        mainValueId={product.reviewState.mainVariantValueId}
+        onGenerateColours={(valueIds) => void actions.generateVariantImages(product.id, imageModel, valueIds)}
+        onRenameOption={(optionId, name) => actions.renameVariantOption(product.id, optionId, name)}
+        onRenameValue={(optionId, valueId, name) => actions.renameVariantValue(product.id, optionId, valueId, name)}
+        onSetMain={(valueId) => actions.setMainVariantValue(product.id, valueId)}
+        onSetReference={(optionId, valueId, reference) =>
+          actions.setVariantReference(product.id, optionId, valueId, reference)
+        }
+        onToggleAll={(optionId) => actions.toggleAllVariantValues(product.id, optionId)}
+        onToggleOption={(optionId) => actions.toggleVariantOptionApproval(product.id, optionId)}
+        onToggleValue={(optionId, valueId) => actions.toggleVariantValueApproval(product.id, optionId, valueId)}
+        options={product.reviewState.variants}
+        variantCount={buildDraftVariants(product.reviewState).variants.length}
+      />
+
       <SourceImageSection
         images={sourceImages}
         onToggle={(url) => actions.toggleSourceReference(product.id, url)}
@@ -164,10 +215,18 @@ export function ReviewPanel({
 
       <GeneratedImageSection
         images={generatedImages}
-        onRegenerate={(imageKind) => void actions.regenerateImage(product.id, imageModel, imageKind)}
+        isBusy={(image) =>
+          image.variantHero
+            ? product.generatingVariantIds.includes(image.variantValueId ?? "")
+            : Boolean(image.imageKind && product.regeneratingKinds.includes(image.imageKind))
+        }
+        onRegenerate={(image) =>
+          image.variantHero && image.variantValueId
+            ? void actions.generateVariantImages(product.id, imageModel, [image.variantValueId])
+            : void actions.regenerateImage(product.id, imageModel, image.imageKind as AiImageKind)
+        }
         onToggle={(url) => actions.toggleGeneratedImageApproval(product.id, url)}
         onToggleAll={() => actions.toggleAllGeneratedImages(product.id)}
-        regeneratingKinds={product.regeneratingKinds}
       />
     </div>
   );

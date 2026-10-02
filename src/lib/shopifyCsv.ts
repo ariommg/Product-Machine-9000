@@ -1,5 +1,5 @@
 import { buildDescriptionHtml, buildSpecificationsText } from "./productFormatting";
-import type { ProductDraft } from "../types/product";
+import type { DraftVariant, ProductDraft } from "../types/product";
 
 /**
  * The specifications metafield.
@@ -104,10 +104,47 @@ export const isPublicShopifyImageUrl = (imageUrl: string) => {
 export const publicShopifyImageUrls = (imageUrls: string[]) =>
   imageUrls.map((imageUrl) => imageUrl.trim()).filter((imageUrl) => imageUrl && isPublicShopifyImageUrl(imageUrl));
 
+const OPTION_NUMBERS = [1, 2, 3] as const;
+
+const publicOrBlank = (imageUrl: string) => (isPublicShopifyImageUrl(imageUrl) ? imageUrl.trim() : "");
+
+/**
+ * Columns every variant row repeats. Price is always 0 and the supplier price
+ * never reaches the CSV, for variants exactly as for single products.
+ */
+const variantColumns = (variant: DraftVariant | null): ShopifyCsvRow => ({
+  ...Object.fromEntries(
+    OPTION_NUMBERS.map((number, index) => [
+      `Option${number} value`,
+      variant ? (variant.optionValues[index] ?? "") : number === 1 ? "Default Title" : "",
+    ]),
+  ),
+  Price: "0",
+  "Charge tax": "FALSE",
+  "Inventory tracker": "",
+  "Inventory quantity": "",
+  "Continue selling when out of stock": "deny",
+  "Weight unit for display": "g",
+  "Requires shipping": "TRUE",
+  "Fulfillment service": "manual",
+  "Variant image URL": variant ? publicOrBlank(variant.imageUrl) : "",
+});
+
+/** Option names go on the first row only; Shopify reads them from there. */
+const optionNameColumns = (draft: ProductDraft): ShopifyCsvRow =>
+  Object.fromEntries(
+    OPTION_NUMBERS.map((number, index) => [
+      `Option${number} name`,
+      draft.variants.length > 0 ? (draft.options[index] ?? "") : number === 1 ? "Title" : "",
+    ]),
+  );
+
 const buildMainProductRow = (draft: ProductDraft): ShopifyCsvRow => {
   const firstImage = publicShopifyImageUrls(draft.imageUrls)[0] ?? "";
 
   return {
+    ...optionNameColumns(draft),
+    ...variantColumns(draft.variants[0] ?? null),
     Title: draft.title,
     "URL handle": draft.handle,
     Description: buildDescriptionHtml(draft.description),
@@ -119,16 +156,6 @@ const buildMainProductRow = (draft: ProductDraft): ShopifyCsvRow => {
     Status: "draft",
     SKU: "",
     Barcode: "",
-    "Option1 name": "Title",
-    "Option1 value": "Default Title",
-    Price: "0",
-    "Charge tax": "FALSE",
-    "Inventory tracker": "",
-    "Inventory quantity": "",
-    "Continue selling when out of stock": "deny",
-    "Weight unit for display": "g",
-    "Requires shipping": "TRUE",
-    "Fulfillment service": "manual",
     "Product image URL": firstImage,
     "Image position": firstImage ? "1" : "",
     "Image alt text": firstImage ? draft.title : "",
@@ -151,12 +178,22 @@ const buildImageOnlyRow = (draft: ProductDraft, imageUrl: string, imagePosition:
   "Image alt text": draft.title,
 });
 
+/**
+ * Every variant after the first rides on a handle-only row. Like image rows,
+ * these leave the product-level columns and the metafield empty.
+ */
+const buildVariantRow = (draft: ProductDraft, variant: DraftVariant): ShopifyCsvRow => ({
+  "URL handle": draft.handle,
+  ...variantColumns(variant),
+});
+
 export const buildShopifyCsvRows = (draft: ProductDraft): ShopifyCsvRow[] => {
+  const additionalVariantRows = draft.variants.slice(1).map((variant) => buildVariantRow(draft, variant));
   const additionalImageRows = publicShopifyImageUrls(draft.imageUrls)
     .slice(1)
     .map((imageUrl, index) => buildImageOnlyRow(draft, imageUrl, index + 2));
 
-  return [buildMainProductRow(draft), ...additionalImageRows];
+  return [buildMainProductRow(draft), ...additionalVariantRows, ...additionalImageRows];
 };
 
 export const buildShopifyCsv = (drafts: ProductDraft[]) => {

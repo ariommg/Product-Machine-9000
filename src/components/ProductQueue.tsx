@@ -1,5 +1,5 @@
 import { ImageOff, Trash2 } from "lucide-react";
-import { requiredFieldsApproved } from "../review/reviewWorkflow";
+import { isReadyForExport } from "../review/reviewWorkflow";
 import type { SessionProduct } from "../hooks/useSession";
 
 type ProductQueueProps = {
@@ -18,7 +18,7 @@ export function ProductQueue({ activeProductId, onRemove, onSelect, products }: 
   return (
     <ul className="queue">
       {products.map((product, index) => {
-        const isReady = requiredFieldsApproved(product.reviewState);
+        const isReady = isReadyForExport(product.reviewState);
         const title = product.reviewState.fields[0]?.value || product.fileName;
         const thumbnail = previewImage(product);
 

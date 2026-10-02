@@ -1,4 +1,11 @@
-import type { AiImageGenerationResult, AiImageKind, AiImageModel, AiProductGenerationResult } from "../types/ai";
+import type {
+  AiImageGenerationResult,
+  AiImageKind,
+  AiImageModel,
+  AiProductGenerationResult,
+  AiVariantImageResult,
+  VariantImageTarget,
+} from "../types/ai";
 import type { ExtractedProductData } from "../types/product";
 
 const postJson = async <T,>(url: string, payload: unknown): Promise<T> => {
@@ -50,7 +57,18 @@ export type ImageRequest = {
 export const requestProductImages = (request: ImageRequest) =>
   postJson<AiImageGenerationResult>("/api/generate-images", request);
 
-export const requestHostedImageDeletion = (urls: string[]) =>
+export type VariantImageRequest = {
+  aiText: AiProductGenerationResult | null;
+  baseImageUrl: string;
+  imageModel: AiImageModel;
+  product: ExtractedProductData;
+  targets: VariantImageTarget[];
+};
+
+export const requestVariantImages = (request: VariantImageRequest) =>
+  postJson<AiVariantImageResult>("/api/generate-variant-images", request);
+
+export const requestHostedImageDeletion =(urls: string[]) =>
   postJson<{ deletedUrls: string[] }>("/api/delete-hosted-images", { urls });
 
 /**

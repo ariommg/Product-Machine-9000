@@ -1,5 +1,10 @@
 import { cleanProductTitle, normalizeWhitespace } from "../lib/productFormatting";
-import type { ExtractedProductData, ProductSpecification } from "../types/product";
+import type {
+  ExtractedProductData,
+  ProductSpecification,
+  VariantCombination,
+  VariantOption,
+} from "../types/product";
 
 type HtmlImportInput = {
   fileName: string;
@@ -211,7 +216,83 @@ const collectDetailDataMedia = (product: UnknownRecord) => {
   return { imageUrls: unique(imageUrls), videoUrls: unique(videoUrls) };
 };
 
-const tableLooksLikeProductDetail = (table: HTMLTableElement) => {
+/**
+ * Variant options live in product.sku.skuAttrs. Each value can carry its own
+ * swatch picture, which matters more than its name: suppliers often name
+ * colours "1", "2", "3", and a print is not describable as one colour anyway.
+ */
+const collectVariants = (product: UnknownRecord) => {
+  const sku = isRecord(product.sku) ? product.sku : {};
+  const rawAttrs = asArray(sku.skuAttrs).length > 0 ? asArray(sku.skuAttrs) : asArray(sku.skuSummaryAttrs);
+
+  const allOptions: VariantOption[] = rawAttrs.filter(isRecord).flatMap((attr) => {
+    const id = asString(attr.id);
+    const name = asString(attr.name);
+    if (!id || !name) {
+      return [];
+    }
+
+    const values = asArray(attr.values)
+      .filter(isRecord)
+      .map((value) => ({
+        hexColor: /^#[0-9a-f]{3,8}$/i.test(asString(value.color)) ? asString(value.color) : "",
+        id: asString(value.id),
+        imageUrl: normalizeMediaUrl(asString(value.originImage) || asString(value.largeImage)),
+        name: asString(value.name),
+        thumbnailUrl: normalizeMediaUrl(
+          asString(value.largeImage) || asString(value.smallImage) || asString(value.originImage),
+        ),
+      }))
+      .filter((value) => value.id && value.name);
+
+    // The supplier's display type says which option is shown as pictures. The
+    // option name is unreliable: sizes are routinely listed under "color" just
+    // to get a picture per value.
+    const displayType = asString(attr.type).toUpperCase();
+    const visual = displayType === "IMAGE" || displayType === "COLOR";
+
+    return [{ id, name, values, visual }];
+  });
+
+  const options = allOptions.filter((option) => option.values.length >= 2);
+  const skippedOptions = allOptions.filter((option) => option.values.length < 2);
+
+  // Only the first visual option drives images. A second one is kept as a plain option.
+  const firstVisualId = options.find((option) => option.visual)?.id;
+  for (const option of options) {
+    option.visual = option.id === firstVisualId;
+  }
+
+  const keptIds = new Set(options.map((option) => option.id));
+  const seen = new Set<string>();
+  const combinations: VariantCombination[] = [];
+
+  // Keys look like "191288010:-37;191286164:-6;". Single-value options are
+  // projected away, which can make several keys collapse into one.
+  for (const key of Object.keys(isRecord(sku.skuInfoMap) ? sku.skuInfoMap : {})) {
+    const combination: VariantCombination = {};
+    for (const pair of key.split(";")) {
+      const [optionId, valueId] = pair.split(":");
+      if (optionId && valueId && keptIds.has(optionId)) {
+        combination[optionId] = valueId;
+      }
+    }
+
+    if (Object.keys(combination).length !== keptIds.size) {
+      continue;
+    }
+
+    const signature = options.map((option) => combination[option.id]).join("|");
+    if (!seen.has(signature)) {
+      seen.add(signature);
+      combinations.push(combination);
+    }
+  }
+
+  return { combinations, options, skippedOptions };
+};
+
+const tableLooksLikeProductDetail =(table: HTMLTableElement) => {
   const context = normalizeWhitespace(
     [
       table.caption?.textContent ?? "",
@@ -291,7 +372,8 @@ const parseFromDetailData = (
 
   const specifications = dedupeSpecifications([...collectBasicProperties(product), ...domSpecifications]);
   const media = collectDetailDataMedia(product);
-  const title = cleanProductTitle(asString(product.subject) || "Produktutkast");
+  const variants = collectVariants(product);
+  const title =cleanProductTitle(asString(product.subject) || "Produktutkast");
   const priceTiers = formatTiers(price.productLadderPrices, ["price", "formatPrice", "formattedPrice", "value"]);
 
   return {
@@ -305,6 +387,18 @@ const parseFromDetailData = (
       domSpecifications.length > 0
         ? `${domSpecifications.length} specifikation(er) hittades i produktdetaljtabeller.`
         : "Inga specifikationer hittades i produktdetaljtabeller.",
+      variants.options.length > 0
+        ? `Varianter i product.sku: ${variants.options
+            .map((option) => `${option.name} (${option.values.length})`)
+            .join(", ")}. ${variants.combinations.length} kombination(er) finns hos leverantören.`
+        : "Inga varianter med flera val hittades i product.sku.",
+      ...(variants.skippedOptions.length > 0
+        ? [
+            `Hoppade över grupper med ett enda val: ${variants.skippedOptions
+              .map((option) => `${option.name} (${option.values[0]?.name ?? "tom"})`)
+              .join(", ")}.`,
+          ]
+        : []),
     ],
     imageUrls: media.imageUrls,
     // Logistics data is kept apart from specs so it can never become product data.
@@ -319,6 +413,8 @@ const parseFromDetailData = (
     supplierSku:
       specifications.find((item) => /model number|modellnummer|item number|artikelnummer/i.test(item.name))?.value ?? "",
     title,
+    variantCombinations: variants.combinations,
+    variantOptions: variants.options,
     videoUrls: media.videoUrls,
   };
 };
@@ -354,6 +450,8 @@ const parseFromDomFallback = (document: Document, html: string, fileName: string
     supplierPrice: "",
     supplierSku: "",
     title,
+    variantCombinations: [],
+    variantOptions: [],
     videoUrls: collectFallbackMediaUrls(html, [".mp4", ".webm", ".m3u8"]).slice(0, 12),
   };
 };

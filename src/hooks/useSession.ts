@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { requestProductImages, requestProductText } from "../lib/api";
+import { requestProductImages, requestProductText, requestVariantImages } from "../lib/api";
 import { isHtmlFile, readFileAsText } from "../lib/fileImport";
 import { isPublicShopifyImageUrl } from "../lib/shopifyCsv";
 import { parseSupplierHtmlFile } from "../html/supplierHtmlParser";
@@ -8,11 +8,19 @@ import {
   buildReviewState,
   createManualSpecification,
   isBlockedSpecification,
-  requiredFieldsApproved,
+  isReadyForExport,
+  mainHeroImage,
+  mainVariantValue,
+  sortGeneratedImages,
+  variantReference,
+  visualOption,
   type ProductReviewState,
+  type ReferenceFile,
   type ReviewImageField,
   type ReviewSpecificationField,
   type ReviewTextFieldKey,
+  type ReviewVariantOption,
+  type ReviewVariantValue,
 } from "../review/reviewWorkflow";
 import { AI_IMAGE_KINDS, imageKindsForCount } from "../types/ai";
 import type {
@@ -21,6 +29,8 @@ import type {
   AiImageKind,
   AiImageModel,
   AiProductGenerationResult,
+  VariantImageFailure,
+  VariantImageTarget,
 } from "../types/ai";
 
 export type UserReferenceImage = {
@@ -36,6 +46,8 @@ export type SessionProduct = {
   /** Errors live per product so one failure cannot wipe another product's message. */
   error: string;
   fileName: string;
+  /** Colours whose hero is being generated right now, for per-colour spinners. */
+  generatingVariantIds: string[];
   id: string;
   isGeneratingImages: boolean;
   isGeneratingText: boolean;
@@ -45,6 +57,8 @@ export type SessionProduct = {
   reviewState: ProductReviewState;
   selectedReferenceImageIds: string[];
   selectedSourceImageUrls: string[];
+  /** Colours whose hero could not be generated in the last run, with the reason. */
+  variantImageFailures: VariantImageFailure[];
 };
 
 let idCounter = 0;
@@ -104,6 +118,7 @@ export const useSession = () => {
           aiResult: null,
           error: "",
           fileName: file.name,
+          generatingVariantIds: [],
           id: nextId("product"),
           isGeneratingImages: false,
           isGeneratingText: false,
@@ -111,8 +126,15 @@ export const useSession = () => {
           regeneratingKinds: [],
           reviewState: buildReviewState(rawData),
           selectedReferenceImageIds: [],
-          // The first source image is the most useful default AI reference.
-          selectedSourceImageUrls: rawData.imageUrls.slice(0, 1),
+          // The first source image is the most useful default AI reference, unless
+          // the product has colour swatches: then the main colour's swatch is used
+          // automatically, and a gallery photo may well show a different colour.
+          selectedSourceImageUrls: rawData.variantOptions.some(
+            (option) => option.visual && option.values.some((value) => value.imageUrl),
+          )
+            ? []
+            : rawData.imageUrls.slice(0, 1),
+          variantImageFailures: [],
         });
       } catch {
         failedFileNames.push(file.name);
@@ -342,6 +364,25 @@ export const useSession = () => {
     [updateProduct],
   );
 
+  /** A name the AI changes is un-approved, exactly like a name you edit yourself. */
+  const applyAiOptionNames = (options: ReviewVariantOption[], aiResult: AiProductGenerationResult) =>
+    options.map((option) => {
+      const named = aiResult.options.find((item) => item.id === option.id);
+      if (!named) {
+        return option;
+      }
+      const optionName = named.name.trim() || option.name;
+      return {
+        ...option,
+        approved: option.approved && optionName === option.name,
+        name: optionName,
+        values: option.values.map((value) => {
+          const valueName = named.values.find((item) => item.id === value.id)?.name.trim() || value.name;
+          return { ...value, approved: value.approved && valueName === value.name, name: valueName };
+        }),
+      };
+    });
+
   const applyAiText = (product: SessionProduct, aiResult: AiProductGenerationResult): SessionProduct => {
     const manualSpecifications = product.reviewState.specifications.filter((specification) => specification.manual);
     const aiSpecifications = aiResult.specs.map(
@@ -367,6 +408,7 @@ export const useSession = () => {
           return value ? { ...field, approved: false, status: "needs-review", value } : field;
         }),
         specifications: [...aiSpecifications, ...manualSpecifications],
+        variants: applyAiOptionNames(product.reviewState.variants, aiResult),
       },
     };
   };
@@ -394,7 +436,7 @@ export const useSession = () => {
     [updateProduct],
   );
 
-  const toReviewImages = (aiImages: AiImageGenerationResult): ReviewImageField[] =>
+  const toReviewImages = (aiImages: AiImageGenerationResult, mainValueId: string | null): ReviewImageField[] =>
     AI_IMAGE_KINDS.flatMap((imageKind) => {
       const image = aiImages.images[imageKind];
       if (!image) {
@@ -410,6 +452,8 @@ export const useSession = () => {
           kind: "ai-generated" as const,
           label: image.label,
           url: image.hostedUrl ?? image.dataUrlOrUrl,
+          variantValueId: mainValueId,
+          variantHero: false,
         },
       ];
     });
@@ -435,6 +479,17 @@ export const useSession = () => {
         .filter((image) => product.selectedReferenceImageIds.includes(image.id))
         .map((image) => ({ dataUrl: image.dataUrl, name: image.name }));
 
+      // The main colour's own swatch always goes along, so the set comes out in
+      // that colour rather than whichever colour the gallery photos happen to show.
+      const mainValue = mainVariantValue(product.reviewState);
+      const mainReference = mainValue ? variantReference(mainValue) : null;
+      const referenceImageUrls = [...product.selectedSourceImageUrls];
+      if (mainReference?.file) {
+        referenceImageFiles.push(mainReference.file);
+      } else if (mainReference?.url && !referenceImageUrls.includes(mainReference.url)) {
+        referenceImageUrls.push(mainReference.url);
+      }
+
       try {
         const aiImages = await requestProductImages({
           aiText: product.aiResult,
@@ -442,10 +497,10 @@ export const useSession = () => {
           kinds,
           product: product.reviewState.rawData,
           referenceImageFiles,
-          referenceImageUrls: product.selectedSourceImageUrls,
+          referenceImageUrls,
         });
 
-        const generatedImages = toReviewImages(aiImages);
+        const generatedImages = toReviewImages(aiImages, mainValue?.id ?? null);
         // Remember every hosted URL, including ones a regeneration replaced, so
         // cleanup can still reach images that are no longer on screen.
         setHostedImageHistory((current) =>
@@ -454,19 +509,15 @@ export const useSession = () => {
 
         updateProduct(id, (current) => {
           const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
-          const keptGenerated =
-            mode === "merge"
-              ? current.reviewState.images.filter(
-                  (image) => image.kind === "ai-generated" && !kinds.includes(image.imageKind as AiImageKind),
-                )
-              : [];
-
-          // Re-sort into canonical shot order so a regenerated image keeps its place.
-          const generated = [...keptGenerated, ...generatedImages].sort(
-            (left, right) =>
-              AI_IMAGE_KINDS.indexOf(left.imageKind as AiImageKind) -
-              AI_IMAGE_KINDS.indexOf(right.imageKind as AiImageKind),
+          // Extra-colour heroes survive a new main set; regenerate them one by one if needed.
+          const keptGenerated = current.reviewState.images.filter(
+            (image) =>
+              image.kind === "ai-generated" &&
+              (image.variantHero || (mode === "merge" && !kinds.includes(image.imageKind as AiImageKind))),
           );
+
+          // Re-sort into canonical order so a regenerated image keeps its place.
+          const generated = sortGeneratedImages(current.reviewState, [...keptGenerated, ...generatedImages]);
 
           return {
             ...current,
@@ -501,10 +552,213 @@ export const useSession = () => {
     [runImageGeneration],
   );
 
+  const updateVariants = useCallback(
+    (id: string, updater: (options: ReviewVariantOption[]) => ReviewVariantOption[]) => {
+      updateReview(id, (reviewState) => ({ ...reviewState, variants: updater(reviewState.variants) }));
+    },
+    [updateReview],
+  );
+
+  const updateVariantValue = useCallback(
+    (id: string, optionId: string, valueId: string, updater: (value: ReviewVariantValue) => ReviewVariantValue) => {
+      updateVariants(id, (options) =>
+        options.map((option) =>
+          option.id === optionId
+            ? { ...option, values: option.values.map((value) => (value.id === valueId ? updater(value) : value)) }
+            : option,
+        ),
+      );
+    },
+    [updateVariants],
+  );
+
+  const renameVariantOption = useCallback(
+    (id: string, optionId: string, name: string) => {
+      updateVariants(id, (options) =>
+        options.map((option) => (option.id === optionId ? { ...option, approved: false, name } : option)),
+      );
+    },
+    [updateVariants],
+  );
+
+  const toggleVariantOptionApproval = useCallback(
+    (id: string, optionId: string) => {
+      updateVariants(id, (options) =>
+        options.map((option) =>
+          option.id === optionId ? { ...option, approved: !option.approved && Boolean(option.name.trim()) } : option,
+        ),
+      );
+    },
+    [updateVariants],
+  );
+
+  const renameVariantValue = useCallback(
+    (id: string, optionId: string, valueId: string, name: string) => {
+      updateVariantValue(id, optionId, valueId, (value) => ({ ...value, approved: false, name }));
+    },
+    [updateVariantValue],
+  );
+
+  const toggleVariantValueApproval = useCallback(
+    (id: string, optionId: string, valueId: string) => {
+      updateVariantValue(id, optionId, valueId, (value) => ({
+        ...value,
+        approved: !value.approved && Boolean(value.name.trim()),
+      }));
+    },
+    [updateVariantValue],
+  );
+
+  const toggleAllVariantValues = useCallback(
+    (id: string, optionId: string) => {
+      updateVariants(id, (options) =>
+        options.map((option) => {
+          if (option.id !== optionId) {
+            return option;
+          }
+          const named = option.values.filter((value) => value.name.trim());
+          const shouldApprove = !named.every((value) => value.approved);
+          return {
+            ...option,
+            values: option.values.map((value) => ({ ...value, approved: shouldApprove && Boolean(value.name.trim()) })),
+          };
+        }),
+      );
+    },
+    [updateVariants],
+  );
+
+  const setMainVariantValue = useCallback(
+    (id: string, valueId: string) => {
+      updateReview(id, (reviewState) => ({ ...reviewState, mainVariantValueId: valueId }));
+    },
+    [updateReview],
+  );
+
+  const setVariantReference = useCallback(
+    (id: string, optionId: string, valueId: string, reference: ReferenceFile | null) => {
+      updateVariantValue(id, optionId, valueId, (value) => ({ ...value, customReference: reference }));
+    },
+    [updateVariantValue],
+  );
+
+  /**
+   * One hero per extra colour, matched to the main colour's hero. Also used to
+   * regenerate a single colour, which replaces only that colour's hero.
+   */
+  const generateVariantImages = useCallback(
+    async (id: string, imageModel: AiImageModel, valueIds: string[]) => {
+      const product = productsRef.current.find((item) => item.id === id);
+      const option = product ? visualOption(product.reviewState) : null;
+      if (!product || !option) {
+        return;
+      }
+
+      const base = mainHeroImage(product.reviewState);
+      if (!base?.hostedUrl) {
+        updateProduct(id, (current) => ({
+          ...current,
+          error: "Generera huvudfärgens bilder först. De andra färgerna utgår från dess huvudbild.",
+        }));
+        return;
+      }
+
+      const targets: VariantImageTarget[] = option.values
+        .filter(
+          (value) =>
+            valueIds.includes(value.id) &&
+            value.id !== base.variantValueId &&
+            !product.generatingVariantIds.includes(value.id),
+        )
+        .flatMap((value) => {
+          const reference = variantReference(value);
+          return reference
+            ? [
+                {
+                  name: value.name.trim() || value.supplierName,
+                  referenceFile: reference.file,
+                  referenceUrl: reference.url,
+                  valueId: value.id,
+                },
+              ]
+            : [];
+        });
+
+      if (targets.length === 0) {
+        return;
+      }
+
+      const targetIds = targets.map((target) => target.valueId);
+
+      updateProduct(id, (current) => ({
+        ...current,
+        error: "",
+        generatingVariantIds: [...current.generatingVariantIds, ...targetIds],
+        variantImageFailures: current.variantImageFailures.filter((failure) => !targetIds.includes(failure.valueId)),
+      }));
+
+      try {
+        const result = await requestVariantImages({
+          aiText: product.aiResult,
+          baseImageUrl: base.hostedUrl,
+          imageModel,
+          product: product.reviewState.rawData,
+          targets,
+        });
+
+        const newImages: ReviewImageField[] = Object.entries(result.images).map(([valueId, image]) => ({
+          approved: false,
+          blobPathname: image.blobPathname,
+          hostedUrl: image.hostedUrl,
+          hostingError: image.hostingError,
+          imageKind: "hero",
+          kind: "ai-generated",
+          label: image.label,
+          url: image.hostedUrl ?? image.dataUrlOrUrl,
+          variantValueId: valueId,
+          variantHero: true,
+        }));
+
+        setHostedImageHistory((current) =>
+          Array.from(
+            new Set([...current, ...newImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))]),
+          ),
+        );
+
+        updateProduct(id, (current) => {
+          const replacedIds = Object.keys(result.images);
+          const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
+          const keptGenerated = current.reviewState.images.filter(
+            (image) =>
+              image.kind === "ai-generated" &&
+              !(image.variantHero && replacedIds.includes(image.variantValueId ?? "")),
+          );
+
+          return {
+            ...current,
+            generatingVariantIds: current.generatingVariantIds.filter((valueId) => !targetIds.includes(valueId)),
+            reviewState: {
+              ...current.reviewState,
+              images: [...sourceImages, ...sortGeneratedImages(current.reviewState, [...keptGenerated, ...newImages])],
+            },
+            variantImageFailures: [...current.variantImageFailures, ...result.failures],
+          };
+        });
+      } catch (error) {
+        updateProduct(id, (current) => ({
+          ...current,
+          error: error instanceof Error ? error.message : "Färgbilderna kunde inte genereras.",
+          generatingVariantIds: current.generatingVariantIds.filter((valueId) => !targetIds.includes(valueId)),
+        }));
+      }
+    },
+    [updateProduct],
+  );
+
   const exportableDrafts = useMemo(
     () =>
       products
-        .filter((product) => requiredFieldsApproved(product.reviewState))
+        .filter((product) => isReadyForExport(product.reviewState))
         .map((product) => buildApprovedDraft(product.reviewState)),
     [products],
   );
@@ -518,18 +772,26 @@ export const useSession = () => {
       clearSession,
       generateImages,
       generateText,
+      generateVariantImages,
       importFiles,
       regenerateImage,
       removeProduct,
       removeReferenceImage,
       removeSpecification,
+      renameVariantOption,
+      renameVariantValue,
       setActiveProductId,
+      setMainVariantValue,
+      setVariantReference,
       toggleAllGeneratedImages,
+      toggleAllVariantValues,
       toggleGeneratedImageApproval,
       toggleSourceReference,
       toggleSpecificationApproval,
       toggleTextFieldApproval,
       toggleUserReference,
+      toggleVariantOptionApproval,
+      toggleVariantValueApproval,
       updateSpecification,
       updateTextField,
     },

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { put } from "@vercel/blob";
 import OpenAI, { toFile } from "openai";
-import { buildImageGenerationPrompt } from "./prompts/imageGenerationPrompt.js";
+import { buildImageGenerationPrompt, buildVariantImagePrompt } from "./prompts/imageGenerationPrompt.js";
 import {
   MAX_REFERENCE_IMAGE_COUNT,
+  fetchReferenceImage,
   fetchReferenceImages,
   parseReferenceImageFiles,
   parseReferenceImageUrls,
@@ -11,13 +12,17 @@ import {
 } from "./lib/referenceImages.js";
 import { encodeGeneratedImage } from "./lib/generatedImages.js";
 import { HOSTED_IMAGE_PREFIX } from "./cleanupExpiredImages.js";
-import { shrinkReferenceImages } from "./lib/shrinkReferenceImage.js";
+import { getReferenceMaxEdge, shrinkReferenceImage, shrinkReferenceImages } from "./lib/shrinkReferenceImage.js";
+import type { ReferenceImage } from "./lib/referenceImages.js";
 import type {
   AiGeneratedImage,
   AiImageGenerationResult,
   AiImageKind,
   AiImageModel,
   AiProductGenerationResult,
+  AiVariantImageResult,
+  VariantImageFailure,
+  VariantImageTarget,
 } from "../src/types/ai.js";
 import type { ExtractedProductData } from "../src/types/product.js";
 
@@ -126,7 +131,7 @@ const imageToGeneratedAsset = async (image: { b64_json?: string; url?: string })
  * Shopify imports images by downloading them, so a generated image is only usable
  * once it has a public URL. Without a blob token it stays preview-only.
  */
-const uploadGeneratedImageToBlob = async (kind: AiImageKind, asset: GeneratedImageAsset) => {
+const uploadGeneratedImageToBlob = async (fileTag: string, asset: GeneratedImageAsset) => {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     return {
       blobPathname: null,
@@ -143,7 +148,7 @@ const uploadGeneratedImageToBlob = async (kind: AiImageKind, asset: GeneratedIma
     // Re-encode before upload: this is what is stored, and what Shopify downloads.
     const encoded = await encodeGeneratedImage(asset.bytes);
     const blob = await put(
-      `${HOSTED_IMAGE_PREFIX}${Date.now()}-${randomUUID()}-${kind}.${encoded.extension}`,
+      `${HOSTED_IMAGE_PREFIX}${Date.now()}-${randomUUID()}-${fileTag}.${encoded.extension}`,
       Buffer.from(encoded.bytes),
       { access: "public", addRandomSuffix: false, contentType: encoded.contentType },
     );
@@ -262,4 +267,142 @@ export const generateProductImages = async ({
     referenceImageUrls: allReferenceImages.map((referenceImage) => referenceImage.url),
     usedReferenceImage: allReferenceImages.length > 0,
   };
+};
+
+type GenerateVariantImagesInput = {
+  aiText: AiProductGenerationResult | null;
+  /** Hosted URL of the main colour's hero, which every extra colour is matched to. */
+  baseImageUrl: unknown;
+  imageModel: unknown;
+  product: ExtractedProductData;
+  targets: unknown;
+};
+
+const MAX_VARIANT_TARGETS = 40;
+
+/** Supplier value ids can be negative ("-21"), which is fine in a URL but not pretty. */
+const fileSafeId = (valueId: string) => valueId.replace(/[^a-z0-9]+/gi, "") || "x";
+
+const isVariantImageTarget = (value: unknown): value is VariantImageTarget => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const target = value as VariantImageTarget;
+  return typeof target.valueId === "string" && typeof target.name === "string";
+};
+
+/** A hero per extra colour, each one call, each re-sending just two references. */
+export const generateVariantImages = async ({
+  aiText,
+  baseImageUrl,
+  imageModel,
+  product,
+  targets,
+}: GenerateVariantImagesInput): Promise<AiVariantImageResult> => {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY saknas.");
+  }
+  if (!isAllowedImageModel(imageModel)) {
+    throw new Error("Ogiltig bildmodell. Använd gpt-image-1 eller gpt-image-2.");
+  }
+  if (typeof baseImageUrl !== "string" || !baseImageUrl.startsWith("https://")) {
+    throw new Error("Huvudbilden saknas i anropet. Generera huvudfärgens bilder först.");
+  }
+
+  const variantTargets = Array.isArray(targets) ? targets.filter(isVariantImageTarget) : [];
+  if (variantTargets.length === 0) {
+    throw new Error("Färger att generera saknas i anropet.");
+  }
+  if (variantTargets.length > MAX_VARIANT_TARGETS) {
+    throw new Error(`För många färger på en gång. Högst ${MAX_VARIANT_TARGETS} stöds.`);
+  }
+
+  const imageQuality = getImageQuality();
+  const imageSize = getImageSize();
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const maxEdge = getReferenceMaxEdge();
+
+  const baseAttempt = await fetchReferenceImage(baseImageUrl, 0);
+  if (!("image" in baseAttempt)) {
+    throw new Error(`Huvudbilden kunde inte hämtas: ${baseAttempt.reason}.`);
+  }
+  const base = (await shrinkReferenceImage(baseAttempt.image, maxEdge)).image;
+  const baseFile = await toFile(base.bytes, base.fileName, { type: base.mimeType });
+
+  // Swatches are fetched one at a time before the fan-out, like every other
+  // reference. One that fails is reported for that colour and the rest still run.
+  const failures: VariantImageFailure[] = [];
+  const prepared: Array<{ swatch: ReferenceImage; target: VariantImageTarget }> = [];
+
+  for (const [index, target] of variantTargets.entries()) {
+    let swatch: ReferenceImage | null = null;
+
+    if (target.referenceFile) {
+      const { userReferenceImages } = parseReferenceImageFiles([target.referenceFile]);
+      swatch = userReferenceImages[0] ?? null;
+      if (!swatch) {
+        failures.push({ reason: "den egna referensbilden kunde inte läsas", valueId: target.valueId });
+        continue;
+      }
+    } else if (target.referenceUrl) {
+      const attempt = await fetchReferenceImage(target.referenceUrl, index + 1);
+      if (!("image" in attempt)) {
+        failures.push({ reason: attempt.reason, valueId: target.valueId });
+        continue;
+      }
+      swatch = attempt.image;
+    } else {
+      failures.push({ reason: "färgen saknar referensbild", valueId: target.valueId });
+      continue;
+    }
+
+    prepared.push({ swatch: (await shrinkReferenceImage(swatch, maxEdge)).image, target });
+  }
+
+  const settled = await Promise.allSettled(
+    prepared.map(async ({ swatch, target }): Promise<[string, AiGeneratedImage]> => {
+      const swatchFile = await toFile(swatch.bytes, swatch.fileName, { type: swatch.mimeType });
+      const response = await client.images.edit({
+        image: [baseFile, swatchFile],
+        model: imageModel,
+        n: 1,
+        prompt: buildVariantImagePrompt(target.name, product, aiText),
+        quality: imageQuality,
+        size: imageSize,
+      });
+
+      const image = response.data?.[0];
+      if (!image) {
+        throw new Error("bildgenereringen returnerade ingen bild");
+      }
+
+      const asset = await imageToGeneratedAsset(image);
+      const hosting = await uploadGeneratedImageToBlob(`variant-${fileSafeId(target.valueId)}`, asset);
+
+      return [
+        target.valueId,
+        {
+          blobPathname: hosting.blobPathname,
+          dataUrlOrUrl: asset.dataUrlOrUrl,
+          hostedUrl: hosting.hostedUrl,
+          hostingError: hosting.hostingError,
+          label: `${imageLabels.hero} – ${target.name}`,
+        },
+      ];
+    }),
+  );
+
+  const images: Record<string, AiGeneratedImage> = {};
+  settled.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      images[result.value[0]] = result.value[1];
+    } else {
+      failures.push({
+        reason: result.reason instanceof Error ? result.reason.message : "bildgenereringen misslyckades",
+        valueId: prepared[index].target.valueId,
+      });
+    }
+  });
+
+  return { failures, images };
 };

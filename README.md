@@ -9,7 +9,7 @@ Nothing is stored anywhere. No database, no accounts, no projects, no browser st
 1. Open a supplier product page in a normal browser and wait for the data and images to load.
 2. Save the page with `Ctrl` + `S`.
 3. Drop the `.html` files into Product Machine 9000. Several files, or a whole folder, at once.
-4. Work through the queue: generate Swedish copy, generate product images, approve what is correct.
+4. Work through the queue: generate Swedish copy, pick the colours and sizes you want to sell, generate product images, approve what is correct.
 5. Export one CSV for every product you approved.
 6. Import the CSV into Shopify, confirm the images arrived, then clear the hosted images.
 
@@ -17,7 +17,7 @@ Nothing is stored anywhere. No database, no accounts, no projects, no browser st
 
 These are fixed in code, not in the prompt, so the AI cannot talk itself out of them:
 
-- Price is always `0`.
+- Price is always `0`, on every variant.
 - Status is always lowercase `draft`.
 - SKU, barcode, tags, vendor, product category and type are always blank.
 - Charge tax is `FALSE`.
@@ -58,6 +58,8 @@ It splits on the first `": "` only, so a value containing its own colon stays in
 | `product.subject` | Title |
 | `product.productBasicProperties` | Specifications |
 | `product.mediaItems` | Images and videos |
+| `product.sku.skuAttrs` | Variant options and their values, with each value's swatch picture |
+| `product.sku.skuInfoMap` | Which combinations of values the supplier actually sells |
 | `product.moq` | Internal only |
 | `seller.companyName` | Internal only |
 | `product.price.formatLadderPrice` | Internal only |
@@ -72,13 +74,50 @@ Supplier name, price, MOQ, and logistics are held in separate fields from specif
 
 Server-side only. The browser never sees the OpenAI key.
 
-Generates a Swedish title, a Swedish description, and cleaned specifications. It does not generate SEO fields, tags, category, type, variants, or pricing.
+Generates a Swedish title, a Swedish description, cleaned specifications, and Swedish names for the variant options and values. It does not generate SEO fields, tags, category, type, or pricing, and it never adds or removes variants: it only names the ones the page lists.
 
 Wording that reveals sourcing (Alibaba, leverantör, fabrik, Kina, dropshipping, MOQ, grossist and similar) is flagged as a warning on the field rather than silently deleted, so you can edit it instead of losing the copy. Nothing exports without approval regardless.
+
+## Variants
+
+Colours, sizes and other options are read from `product.sku`. An option with only one value (for example a single age range or plug type) is not a real choice and is skipped, with a note in the extraction notes.
+
+The **Varianter** panel lists every option and value. Nothing is approved up front, because suppliers often list far more colours than you want to sell:
+
+- Tick **Inkludera** on each value you want. Editing a name un-approves it.
+- Approve each group name (`Färg`, `Storlek`).
+- Mark one colour as **Huvudfärg**. It gets the full image set; every other colour gets one hero.
+
+Supplier names are often useless: one saved page names its 26 colours `"1"` to `"26"`. Text generation therefore also looks at the swatch thumbnails (sent small, at low detail) and suggests a short Swedish name for each value. You approve or edit it like any other field.
+
+The option that is shown as pictures on the supplier page drives image generation. That is decided from the supplier's display type, not the option's name, because suppliers regularly put sizes under "color" to get a picture per value.
+
+### In the CSV
+
+Each approved combination that the supplier actually sells becomes one Shopify variant, using the existing `Option1`–`Option3` columns. The picture option is always `Option1`. Every variant has price `0`, no SKU and no inventory tracking. Each colour's approved hero goes into `Variant image URL`, so the picture changes when a customer picks a colour.
+
+A product is held back from export when:
+
+- a group has approved values but its name is not approved,
+- two approved values in one group have the same name,
+- more than three groups have approved values (Shopify's limit),
+- none of the approved combinations is sold by the supplier, or there are more than 2048.
+
+A product with no approved values exports exactly as before, as a single variant.
 
 ## AI images
 
 Up to four images per product: hero, angled hero, detail, lifestyle. Each image is one OpenAI call, so `calls = 1 text + number of images`.
+
+### Colour images
+
+With variants, the main colour gets the normal set and its own swatch is added as a reference automatically. When the product has swatches, gallery photos are no longer pre-selected as references, because they often show a different colour from the one you made main.
+
+Every other approved colour gets **one hero**, generated from two references: the finished main hero, for angle, framing and light, and that colour's swatch, for colour and print. The swatch is the source of truth because a name like "grön" covers a hundred greens, and many "colours" are really prints. Six colours cost `4 + 5 = 9` image calls, not 24.
+
+A colour whose supplier entry has only a hex code and no picture is not generated until you add your own reference on its card (upload, or paste with the card focused). A swatch that fails to download is reported on that colour, and the others still run.
+
+### Regeneration
 
 Every generated image has its own **regenerate** button. If only the lifestyle shot came out wrong, regenerating it costs one call instead of four, and the other three are kept exactly as they were.
 
@@ -164,6 +203,7 @@ Endpoints:
 | --- | --- |
 | `/api/generate-product` | Swedish copy and specifications |
 | `/api/generate-images` | Image generation and blob upload |
+| `/api/generate-variant-images` | One hero per extra colour, matched to the main hero |
 | `/api/delete-hosted-images` | Immediate cleanup of hosted images you confirm |
 | `/api/cleanup-expired-images` | Sweeps images past the TTL. Run daily by cron |
 | `/api/image-config` | Non-secret defaults for the UI |
