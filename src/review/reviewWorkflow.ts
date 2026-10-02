@@ -385,9 +385,19 @@ export const buildDraftVariants = (reviewState: ProductReviewState): { options: 
     );
   }
 
-  // Order like the supplier lists them, so the storefront picker reads naturally.
-  const position = (optionIndex: number, valueId: string) =>
-    options[optionIndex].values.findIndex((value) => value.id === valueId);
+  // Shopify orders the picker by first appearance in the CSV. Colours follow the
+  // product images, so the main colour with the full set comes first and the rest
+  // match their image positions. Colours without an exported image go last.
+  // Every other option keeps the supplier's order.
+  const imageOrder = reviewState.images.filter((image) => image.kind === "ai-generated" && image.approved);
+  const colourRank = (valueId: string, supplierIndex: number) => {
+    const imageIndex = imageOrder.findIndex((image) => image.variantValueId === valueId);
+    return imageIndex === -1 ? imageOrder.length + supplierIndex : imageIndex;
+  };
+  const position = (optionIndex: number, valueId: string) => {
+    const supplierIndex = options[optionIndex].values.findIndex((value) => value.id === valueId);
+    return options[optionIndex].visual ? colourRank(valueId, supplierIndex) : supplierIndex;
+  };
   combinations.sort((left, right) => {
     for (let index = 0; index < left.length; index += 1) {
       const difference = position(index, left[index]) - position(index, right[index]);

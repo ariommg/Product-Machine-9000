@@ -11,7 +11,9 @@ import {
   sniffImageMimeType,
 } from "./lib/referenceImages.js";
 import { encodeGeneratedImage } from "./lib/generatedImages.js";
+import { rateLimitWaitSeconds } from "./lib/rateLimit.js";
 import { HOSTED_IMAGE_PREFIX } from "./cleanupExpiredImages.js";
+import { AI_IMAGE_LABELS } from "../src/types/ai.js";
 import { getReferenceMaxEdge, shrinkReferenceImage, shrinkReferenceImages } from "./lib/shrinkReferenceImage.js";
 import type { ReferenceImage } from "./lib/referenceImages.js";
 import type {
@@ -21,6 +23,7 @@ import type {
   AiImageModel,
   AiProductGenerationResult,
   AiVariantImageResult,
+  ImageKindFailure,
   VariantImageFailure,
   VariantImageTarget,
 } from "../src/types/ai.js";
@@ -49,12 +52,7 @@ const allowedImageSizes = ["1024x1024", "1024x1536", "1536x1024", "auto"] as con
 
 const imageKinds: AiImageKind[] = ["hero", "heroAngled", "macro", "lifestyle"];
 
-const imageLabels: Record<AiImageKind, string> = {
-  hero: "Huvudbild",
-  heroAngled: "Vinklad bild",
-  macro: "Detaljbild",
-  lifestyle: "Miljöbild",
-};
+const imageLabels = AI_IMAGE_LABELS;
 
 export const isAllowedImageModel = (model: unknown): model is AiImageModel =>
   typeof model === "string" && allowedImageModels.includes(model as AiImageModel);
@@ -181,7 +179,9 @@ export const generateProductImages = async ({
   const requestedKinds = parseImageKinds(kinds);
   const imageQuality = getImageQuality();
   const imageSize = getImageSize();
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // No SDK retries: they would hold the request open on a 429. The browser waits
+  // out the limit instead and asks again for only the images that are missing.
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 0 });
 
   const selectedReferenceImageUrls = parseReferenceImageUrls(referenceImageUrls);
   const { failedFileCount, userReferenceImages } = parseReferenceImageFiles(referenceImageFiles);
@@ -218,7 +218,7 @@ export const generateProductImages = async ({
     ),
   );
 
-  const entries = await Promise.all(
+  const settled = await Promise.allSettled(
     requestedKinds.map(async (kind): Promise<[AiImageKind, AiGeneratedImage]> => {
       const prompt = buildImageGenerationPrompt(kind, product, aiText);
       const response =
@@ -260,9 +260,31 @@ export const generateProductImages = async ({
     }),
   );
 
+  // One shot failing no longer throws away the shots that worked. A rate-limited
+  // shot carries the wait OpenAI asked for, so the browser can retry just that one.
+  const entries: Array<[AiImageKind, AiGeneratedImage]> = [];
+  const failedKinds: ImageKindFailure[] = [];
+  settled.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      entries.push(result.value);
+    } else {
+      failedKinds.push({
+        kind: requestedKinds[index],
+        reason: result.reason instanceof Error ? result.reason.message : "bildgenereringen misslyckades",
+        retryAfterSeconds: rateLimitWaitSeconds(result.reason),
+      });
+    }
+  });
+
+  // Nothing worked and nothing is worth waiting for, such as a bad key: fail like before.
+  if (entries.length === 0 && failedKinds.every((failure) => failure.retryAfterSeconds === null)) {
+    throw new Error(failedKinds[0]?.reason ?? "Bildgenereringen misslyckades.");
+  }
+
   return {
+    failedKinds,
     failedReferences: failures,
-    generatedKinds: requestedKinds,
+    generatedKinds: entries.map(([kind]) => kind),
     images: Object.fromEntries(entries) as AiImageGenerationResult["images"],
     referenceImageUrls: allReferenceImages.map((referenceImage) => referenceImage.url),
     usedReferenceImage: allReferenceImages.length > 0,
@@ -319,7 +341,9 @@ export const generateVariantImages = async ({
 
   const imageQuality = getImageQuality();
   const imageSize = getImageSize();
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // No SDK retries: they would hold the request open on a 429. The browser waits
+  // out the limit instead and asks again for only the images that are missing.
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 0 });
   const maxEdge = getReferenceMaxEdge();
 
   const baseAttempt = await fetchReferenceImage(baseImageUrl, 0);
@@ -341,18 +365,18 @@ export const generateVariantImages = async ({
       const { userReferenceImages } = parseReferenceImageFiles([target.referenceFile]);
       swatch = userReferenceImages[0] ?? null;
       if (!swatch) {
-        failures.push({ reason: "den egna referensbilden kunde inte läsas", valueId: target.valueId });
+        failures.push({ reason: "den egna referensbilden kunde inte läsas", retryAfterSeconds: null, valueId: target.valueId });
         continue;
       }
     } else if (target.referenceUrl) {
       const attempt = await fetchReferenceImage(target.referenceUrl, index + 1);
       if (!("image" in attempt)) {
-        failures.push({ reason: attempt.reason, valueId: target.valueId });
+        failures.push({ reason: attempt.reason, retryAfterSeconds: null, valueId: target.valueId });
         continue;
       }
       swatch = attempt.image;
     } else {
-      failures.push({ reason: "färgen saknar referensbild", valueId: target.valueId });
+      failures.push({ reason: "färgen saknar referensbild", retryAfterSeconds: null, valueId: target.valueId });
       continue;
     }
 
@@ -399,6 +423,7 @@ export const generateVariantImages = async ({
     } else {
       failures.push({
         reason: result.reason instanceof Error ? result.reason.message : "bildgenereringen misslyckades",
+        retryAfterSeconds: rateLimitWaitSeconds(result.reason),
         valueId: prepared[index].target.valueId,
       });
     }

@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AiToolbar } from "./AiToolbar";
 import { GeneratedImageSection, ReferenceImageSection, SourceImageSection } from "./ImageSections";
 import { Notice } from "./Notice";
 import { SpecificationSection } from "./SpecificationSection";
 import { TextFieldSection } from "./TextFieldSection";
 import { VariantSection } from "./VariantSection";
-import { MAX_REFERENCE_IMAGES, type SessionProduct, type useSession } from "../hooks/useSession";
+import { MAX_REFERENCE_IMAGES, type RateLimitWait, type SessionProduct, type useSession } from "../hooks/useSession";
 import {
   buildDraftVariants,
   mainHeroImage,
@@ -121,6 +121,10 @@ export function ReviewPanel({
 
       {product.error ? <Notice tone="error">{product.error}</Notice> : null}
 
+      {product.rateLimitWait ? (
+        <RateLimitNotice key={product.rateLimitWait.startedAt} wait={product.rateLimitWait} />
+      ) : null}
+
       {mainReference && product.selectedSourceImageUrls.length > 0 ? (
         <Notice tone="info">
           Huvudfärgens egen bild ({mainValue?.name || mainValue?.supplierName}) används automatiskt som referens. Valda
@@ -229,5 +233,26 @@ export function ReviewPanel({
         onToggleAll={() => actions.toggleAllGeneratedImages(product.id)}
       />
     </div>
+  );
+}
+
+/** Counts down so a minute-long wait reads as waiting, not as frozen. */
+function RateLimitNotice({ wait }: { wait: RateLimitWait }) {
+  const [secondsLeft, setSecondsLeft] = useState(wait.seconds);
+
+  useEffect(() => {
+    // Measured from the start rather than decremented, so a throttled background tab stays accurate.
+    const timer = window.setInterval(
+      () => setSecondsLeft(Math.max(Math.ceil(wait.seconds - (Date.now() - wait.startedAt) / 1000), 0)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [wait]);
+
+  return (
+    <Notice tone="info" title="OpenAI:s gräns för bilder per minut nåddes">
+      Försöker igen med {wait.imageCount} {wait.imageCount === 1 ? "bild" : "bilder"} om {secondsLeft} s. Bilderna som
+      redan blev klara är sparade.
+    </Notice>
   );
 }

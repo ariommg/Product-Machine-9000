@@ -77,6 +77,7 @@ Keep the current column set. It is the one that imports cleanly.
 - Image-only continuation rows must leave the metafield column empty
 - Variants use the existing `Option1`–`Option3` columns, never new headers. Only approved values, and only combinations the supplier sells. Variant continuation rows leave product-level columns and the metafield empty
 - A product with no approved variant values exports exactly as a single-variant product
+- Colour variants are written in the same order as the product images, main colour first, because Shopify orders the picker by first appearance
 
 Changing `SHOPIFY_CSV_HEADERS` requires re-testing a real Shopify import.
 
@@ -107,6 +108,8 @@ With variants, the main colour gets the full set and every other approved colour
 Reference downloads must use browser-shaped request headers. Marketplace CDNs return an AVIF or a block page to anything that looks automated. Fetch references sequentially, retry connection resets, and sniff the magic bytes rather than trusting the content-type header.
 
 A reference that fails to download is reported per image and does not abort generation.
+
+An image that hits OpenAI's rate limit does not fail the run. The server returns what worked plus the wait OpenAI asked for, and the browser waits and retries only the missing images. The wait happens in the browser, not the serverless function, so it cannot hit a function timeout. SDK retries are off for image calls for the same reason. `insufficient_quota` is a 429 too, but is never retried.
 
 ## Cost
 

@@ -22,7 +22,7 @@ import {
   type ReviewVariantOption,
   type ReviewVariantValue,
 } from "../review/reviewWorkflow";
-import { AI_IMAGE_KINDS, imageKindsForCount } from "../types/ai";
+import { AI_IMAGE_KINDS, AI_IMAGE_LABELS, imageKindsForCount } from "../types/ai";
 import type {
   AiImageCount,
   AiImageGenerationResult,
@@ -57,9 +57,25 @@ export type SessionProduct = {
   reviewState: ProductReviewState;
   selectedReferenceImageIds: string[];
   selectedSourceImageUrls: string[];
+  /** Set while waiting out OpenAI's per-minute image limit before retrying the rest. */
+  rateLimitWait: RateLimitWait | null;
   /** Colours whose hero could not be generated in the last run, with the reason. */
   variantImageFailures: VariantImageFailure[];
 };
+
+export type RateLimitWait = { imageCount: number; seconds: number; startedAt: number };
+
+/**
+ * Image limits are per minute, so each round gets a few more images through.
+ * Enough rounds for a few dozen colours on the lowest tier, but not forever.
+ */
+const MAX_RATE_LIMIT_ROUNDS = 10;
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The longest wait OpenAI asked for among the rate-limited images. */
+const longestWait = (failures: Array<{ retryAfterSeconds: number | null }>) =>
+  Math.max(...failures.map((failure) => failure.retryAfterSeconds ?? 0));
 
 let idCounter = 0;
 const nextId = (prefix: string) => {
@@ -120,6 +136,7 @@ export const useSession = () => {
           fileName: file.name,
           generatingVariantIds: [],
           id: nextId("product"),
+          rateLimitWait: null,
           isGeneratingImages: false,
           isGeneratingText: false,
           referenceImages: [],
@@ -468,6 +485,7 @@ export const useSession = () => {
         return;
       }
 
+      // Busy flags stay on through every retry round, so a second run cannot start mid-wait.
       updateProduct(id, (current) => ({
         ...current,
         error: "",
@@ -490,51 +508,91 @@ export const useSession = () => {
         referenceImageUrls.push(mainReference.url);
       }
 
+      let pendingKinds = kinds;
+      const failedMessages: string[] = [];
+
       try {
-        const aiImages = await requestProductImages({
-          aiText: product.aiResult,
-          imageModel,
-          kinds,
-          product: product.reviewState.rawData,
-          referenceImageFiles,
-          referenceImageUrls,
-        });
+        for (let round = 0; pendingKinds.length > 0; round += 1) {
+          const requestedKinds = pendingKinds;
+          const aiImages = await requestProductImages({
+            aiText: product.aiResult,
+            imageModel,
+            kinds: requestedKinds,
+            product: product.reviewState.rawData,
+            referenceImageFiles,
+            referenceImageUrls,
+          });
 
-        const generatedImages = toReviewImages(aiImages, mainValue?.id ?? null);
-        // Remember every hosted URL, including ones a regeneration replaced, so
-        // cleanup can still reach images that are no longer on screen.
-        setHostedImageHistory((current) =>
-          Array.from(new Set([...current, ...generatedImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))])),
-        );
-
-        updateProduct(id, (current) => {
-          const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
-          // Extra-colour heroes survive a new main set; regenerate them one by one if needed.
-          const keptGenerated = current.reviewState.images.filter(
-            (image) =>
-              image.kind === "ai-generated" &&
-              (image.variantHero || (mode === "merge" && !kinds.includes(image.imageKind as AiImageKind))),
+          const generatedImages = toReviewImages(aiImages, mainValue?.id ?? null);
+          // Remember every hosted URL, including ones a regeneration replaced, so
+          // cleanup can still reach images that are no longer on screen.
+          setHostedImageHistory((current) =>
+            Array.from(new Set([...current, ...generatedImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))])),
           );
 
-          // Re-sort into canonical order so a regenerated image keeps its place.
-          const generated = sortGeneratedImages(current.reviewState, [...keptGenerated, ...generatedImages]);
+          // A full run clears the old set on its first round only; retries add to it.
+          const clearsSet = mode === "replace" && round === 0;
+          updateProduct(id, (current) => {
+            const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
+            // Extra-colour heroes survive a new main set; regenerate them one by one if needed.
+            const keptGenerated = current.reviewState.images.filter(
+              (image) =>
+                image.kind === "ai-generated" &&
+                (image.variantHero || (!clearsSet && !requestedKinds.includes(image.imageKind as AiImageKind))),
+            );
 
-          return {
+            // Re-sort into canonical order so a regenerated image keeps its place.
+            const generated = sortGeneratedImages(current.reviewState, [...keptGenerated, ...generatedImages]);
+
+            return {
+              ...current,
+              aiImages,
+              reviewState: { ...current.reviewState, images: [...sourceImages, ...generated] },
+            };
+          });
+
+          const rateLimited = aiImages.failedKinds.filter((failure) => failure.retryAfterSeconds !== null);
+          failedMessages.push(
+            ...aiImages.failedKinds
+              .filter((failure) => failure.retryAfterSeconds === null)
+              .map((failure) => `${AI_IMAGE_LABELS[failure.kind]}: ${failure.reason}`),
+          );
+
+          if (rateLimited.length === 0) {
+            break;
+          }
+          if (round + 1 >= MAX_RATE_LIMIT_ROUNDS) {
+            failedMessages.push(
+              `OpenAI:s bildgräns nåddes för många gånger. Generera om ${rateLimited
+                .map((failure) => AI_IMAGE_LABELS[failure.kind].toLowerCase())
+                .join(", ")} senare.`,
+            );
+            break;
+          }
+
+          pendingKinds = rateLimited.map((failure) => failure.kind);
+          const seconds = longestWait(rateLimited);
+          updateProduct(id, (current) => ({
             ...current,
-            aiImages,
-            isGeneratingImages: false,
-            regeneratingKinds: current.regeneratingKinds.filter((kind) => !kinds.includes(kind)),
-            reviewState: { ...current.reviewState, images: [...sourceImages, ...generated] },
-          };
-        });
+            rateLimitWait: { imageCount: pendingKinds.length, seconds, startedAt: Date.now() },
+          }));
+          await wait(seconds * 1000);
+          if (!productsRef.current.some((item) => item.id === id)) {
+            return;
+          }
+          updateProduct(id, (current) => ({ ...current, rateLimitWait: null }));
+        }
       } catch (error) {
-        updateProduct(id, (current) => ({
-          ...current,
-          error: error instanceof Error ? error.message : "Bildgenereringen misslyckades.",
-          isGeneratingImages: false,
-          regeneratingKinds: current.regeneratingKinds.filter((kind) => !kinds.includes(kind)),
-        }));
+        failedMessages.push(error instanceof Error ? error.message : "Bildgenereringen misslyckades.");
       }
+
+      updateProduct(id, (current) => ({
+        ...current,
+        error: failedMessages.join(" "),
+        isGeneratingImages: false,
+        rateLimitWait: null,
+        regeneratingKinds: current.regeneratingKinds.filter((kind) => !kinds.includes(kind)),
+      }));
     },
     [updateProduct],
   );
@@ -697,60 +755,104 @@ export const useSession = () => {
         variantImageFailures: current.variantImageFailures.filter((failure) => !targetIds.includes(failure.valueId)),
       }));
 
+      let pendingTargets = targets;
+      const failures: VariantImageFailure[] = [];
+      let errorMessage = "";
+
       try {
-        const result = await requestVariantImages({
-          aiText: product.aiResult,
-          baseImageUrl: base.hostedUrl,
-          imageModel,
-          product: product.reviewState.rawData,
-          targets,
-        });
+        for (let round = 0; pendingTargets.length > 0; round += 1) {
+          const result = await requestVariantImages({
+            aiText: product.aiResult,
+            baseImageUrl: base.hostedUrl,
+            imageModel,
+            product: product.reviewState.rawData,
+            targets: pendingTargets,
+          });
 
-        const newImages: ReviewImageField[] = Object.entries(result.images).map(([valueId, image]) => ({
-          approved: false,
-          blobPathname: image.blobPathname,
-          hostedUrl: image.hostedUrl,
-          hostingError: image.hostingError,
-          imageKind: "hero",
-          kind: "ai-generated",
-          label: image.label,
-          url: image.hostedUrl ?? image.dataUrlOrUrl,
-          variantValueId: valueId,
-          variantHero: true,
-        }));
+          const newImages: ReviewImageField[] = Object.entries(result.images).map(([valueId, image]) => ({
+            approved: false,
+            blobPathname: image.blobPathname,
+            hostedUrl: image.hostedUrl,
+            hostingError: image.hostingError,
+            imageKind: "hero",
+            kind: "ai-generated",
+            label: image.label,
+            url: image.hostedUrl ?? image.dataUrlOrUrl,
+            variantValueId: valueId,
+            variantHero: true,
+          }));
 
-        setHostedImageHistory((current) =>
-          Array.from(
-            new Set([...current, ...newImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))]),
-          ),
-        );
-
-        updateProduct(id, (current) => {
-          const replacedIds = Object.keys(result.images);
-          const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
-          const keptGenerated = current.reviewState.images.filter(
-            (image) =>
-              image.kind === "ai-generated" &&
-              !(image.variantHero && replacedIds.includes(image.variantValueId ?? "")),
+          setHostedImageHistory((current) =>
+            Array.from(
+              new Set([...current, ...newImages.map((image) => image.hostedUrl).filter((url): url is string => Boolean(url))]),
+            ),
           );
 
-          return {
+          // Each colour's spinner stops as soon as its own image lands.
+          const finishedIds = [
+            ...Object.keys(result.images),
+            ...result.failures.filter((failure) => failure.retryAfterSeconds === null).map((failure) => failure.valueId),
+          ];
+
+          updateProduct(id, (current) => {
+            const replacedIds = Object.keys(result.images);
+            const sourceImages = current.reviewState.images.filter((image) => image.kind === "source");
+            const keptGenerated = current.reviewState.images.filter(
+              (image) =>
+                image.kind === "ai-generated" &&
+                !(image.variantHero && replacedIds.includes(image.variantValueId ?? "")),
+            );
+
+            return {
+              ...current,
+              generatingVariantIds: current.generatingVariantIds.filter((valueId) => !finishedIds.includes(valueId)),
+              reviewState: {
+                ...current.reviewState,
+                images: [...sourceImages, ...sortGeneratedImages(current.reviewState, [...keptGenerated, ...newImages])],
+              },
+            };
+          });
+
+          const rateLimited = result.failures.filter((failure) => failure.retryAfterSeconds !== null);
+          failures.push(...result.failures.filter((failure) => failure.retryAfterSeconds === null));
+
+          if (rateLimited.length === 0) {
+            break;
+          }
+          if (round + 1 >= MAX_RATE_LIMIT_ROUNDS) {
+            failures.push(
+              ...rateLimited.map((failure) => ({
+                ...failure,
+                reason: "OpenAI:s bildgräns nåddes för många gånger, försök igen senare",
+              })),
+            );
+            break;
+          }
+
+          const limitedIds = rateLimited.map((failure) => failure.valueId);
+          pendingTargets = pendingTargets.filter((target) => limitedIds.includes(target.valueId));
+          const seconds = longestWait(rateLimited);
+          updateProduct(id, (current) => ({
             ...current,
-            generatingVariantIds: current.generatingVariantIds.filter((valueId) => !targetIds.includes(valueId)),
-            reviewState: {
-              ...current.reviewState,
-              images: [...sourceImages, ...sortGeneratedImages(current.reviewState, [...keptGenerated, ...newImages])],
-            },
-            variantImageFailures: [...current.variantImageFailures, ...result.failures],
-          };
-        });
+            rateLimitWait: { imageCount: pendingTargets.length, seconds, startedAt: Date.now() },
+          }));
+          await wait(seconds * 1000);
+          if (!productsRef.current.some((item) => item.id === id)) {
+            return;
+          }
+          updateProduct(id, (current) => ({ ...current, rateLimitWait: null }));
+        }
       } catch (error) {
-        updateProduct(id, (current) => ({
-          ...current,
-          error: error instanceof Error ? error.message : "Färgbilderna kunde inte genereras.",
-          generatingVariantIds: current.generatingVariantIds.filter((valueId) => !targetIds.includes(valueId)),
-        }));
+        errorMessage = error instanceof Error ? error.message : "Färgbilderna kunde inte genereras.";
       }
+
+      updateProduct(id, (current) => ({
+        ...current,
+        error: errorMessage,
+        generatingVariantIds: current.generatingVariantIds.filter((valueId) => !targetIds.includes(valueId)),
+        rateLimitWait: null,
+        variantImageFailures: [...current.variantImageFailures, ...failures],
+      }));
     },
     [updateProduct],
   );

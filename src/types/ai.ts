@@ -41,6 +41,8 @@ export type ReferenceImageFailure = {
 };
 
 export type AiImageGenerationResult = {
+  /** Shots that were not produced. Rate-limited ones are retried by the browser. */
+  failedKinds: ImageKindFailure[];
   /** References the server could not load. Generation still runs with whatever loaded. */
   failedReferences: ReferenceImageFailure[];
   /** Which kinds this run produced. A regeneration returns exactly one. */
@@ -59,9 +61,17 @@ export type VariantImageTarget = {
   valueId: string;
 };
 
-export type VariantImageFailure = {
+/** Seconds OpenAI asked us to wait, when the failure was a rate limit. Null otherwise. */
+type RetryHint = { retryAfterSeconds: number | null };
+
+export type VariantImageFailure = RetryHint & {
   reason: string;
   valueId: string;
+};
+
+export type ImageKindFailure = RetryHint & {
+  kind: AiImageKind;
+  reason: string;
 };
 
 export type AiVariantImageResult = {
@@ -70,5 +80,12 @@ export type AiVariantImageResult = {
 };
 
 export const AI_IMAGE_KINDS: AiImageKind[] = ["hero", "heroAngled", "macro", "lifestyle"];
+
+export const AI_IMAGE_LABELS: Record<AiImageKind, string> = {
+  hero: "Huvudbild",
+  heroAngled: "Vinklad bild",
+  macro: "Detaljbild",
+  lifestyle: "Miljöbild",
+};
 
 export const imageKindsForCount = (imageCount: AiImageCount) => AI_IMAGE_KINDS.slice(0, imageCount);

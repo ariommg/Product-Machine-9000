@@ -96,6 +96,8 @@ The option that is shown as pictures on the supplier page drives image generatio
 
 Each approved combination that the supplier actually sells becomes one Shopify variant, using the existing `Option1`–`Option3` columns. The picture option is always `Option1`. Every variant has price `0`, no SKU and no inventory tracking. Each colour's approved hero goes into `Variant image URL`, so the picture changes when a customer picks a colour.
 
+Shopify orders the colour picker by first appearance in the CSV, so colours are written in the same order as the product images: the main colour first, then each colour in its image's position. Colours without an exported image come last.
+
 A product is held back from export when:
 
 - a group has approved values but its name is not approved,
@@ -116,6 +118,10 @@ With variants, the main colour gets the normal set and its own swatch is added a
 Every other approved colour gets **one hero**, generated from two references: the finished main hero, for angle, framing and light, and that colour's swatch, for colour and print. The swatch is the source of truth because a name like "grön" covers a hundred greens, and many "colours" are really prints. Six colours cost `4 + 5 = 9` image calls, not 24.
 
 A colour whose supplier entry has only a hex code and no picture is not generated until you add your own reference on its card (upload, or paste with the card focused). A swatch that fails to download is reported on that colour, and the others still run.
+
+### Rate limits
+
+OpenAI limits how many images an account can generate per minute (five on the lowest tier). When a run goes over, the images that worked are kept, the app shows a countdown for the wait OpenAI asked for, and then retries only the images that are missing. It keeps going in rounds until everything is done, up to 10 rounds. Running out of credit is not retried, because waiting does not fix it.
 
 ### Regeneration
 
